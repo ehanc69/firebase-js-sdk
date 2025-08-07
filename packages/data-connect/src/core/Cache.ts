@@ -18,9 +18,12 @@
 
 import { QueryResult } from '../api';
 
-/** Value is any FDC scalar value. */
+/** Value is any FDC scalar value. */ // TODO: make this more accurate
 type Value = string | number | boolean | null | undefined | object | Value[];
 
+/**
+ * Defines the shape of query result data - "movies", "actor", etc.
+ */
 export interface QueryResultData {
   [key: string]: Value;
   __typename?: string;
@@ -28,28 +31,23 @@ export interface QueryResultData {
 }
 
 /**
- * Interface representing the result tree for an operation.
- * @public
- */
-export interface StubResultTree {
-  [key: string]: StubDataObject | StubDataObjectList;
-}
-
-/**
- * Creates a unique cache key for a given query and its variables.
+ * Creates a unique StrubResultTree cache key for a given query and its variables.
  * @param queryName The name of the query.
  * @param vars The variables used in the query.
  * @returns A unique cache key string.
  * @public
  */
-export function makeStubCacheKey(queryName: string, vars: unknown): string {
+export function makeResultTreeCacheKey(
+  queryName: string,
+  vars: unknown
+): string {
   return queryName + '|' + JSON.stringify(vars);
 }
 
 /**
- * Creates a unique cache key for a given query and its variables.
- * @param queryName The name of the query.
- * @param vars The variables used in the query.
+ * Creates a unique BackingDataObject cache key for a given entity.
+ * @param typename The typename of the entity being cached.
+ * @param id The unique id / primary key of this entity.
  * @returns A unique cache key string.
  * @public
  */
@@ -63,8 +61,6 @@ export function makeBdoCacheKey(typename: string, id: unknown): string {
  * @public
  */
 export interface StubDataObject {
-  /** A stable unique key identifying the entity across types. */
-  readonly typedKey: string;
   [key: string]: Value | StubDataObject;
 }
 
@@ -84,7 +80,7 @@ export class BackingDataObject {
    * Stable unique key identifying the entity across types.
    * TypeName + CompositePrimaryKey.
    */
-  private typedKey: string;
+  readonly typedKey: string;
 
   /** Represents values received from the server. */
   private serverValues: Map<string, Value>;
@@ -147,7 +143,7 @@ export class Cache {
    * A map of ([query + variables] --> stubs returned from that query).
    * @public
    */
-  stubTreeCache = new Map<string, StubDataObject>();
+  resultTreeCache = new Map<string, StubDataObject[]>();
 
   /**
    * A map of ([entity typename + id] --> BackingDataObject for that entity).
@@ -163,53 +159,79 @@ export class Cache {
   updateCache<Data extends QueryResultData | QueryResultData[], Variables>(
     queryResult: QueryResult<Data, Variables>
   ): void {
-    const queryKey = makeStubCacheKey(
-      queryResult.ref.name,
-      queryResult.ref.variables
-    );
-
+    const stubDataObjects: StubDataObject[] = []; // ! if this is going to be mapped to the query name | variables, consider the fact that not all queries return a list of objects...
     // key = "movies" or "actor", etc.
     // eslint-disable-next-line guard-for-in
     for (const key in queryResult.data) {
       const queryData = queryResult.data[key];
       if (Array.isArray(queryData)) {
-        queryData.forEach(qd => this.updateBdoCache(qd));
+        queryData.forEach(qd => {
+          const sdo: StubDataObject = {
+            ...Object.entries(qd)
+            // todo: add in non-cacheable fields
+          };
+          stubDataObjects.push(sdo);
+          const bdo: BackingDataObject = this.updateBdoCache(qd, sdo);
+        });
       } else {
-        this.updateBdoCache(queryData as QueryResultData); // ! i don't think i should need a type assertion here, yet TS complains without it...
+        const sdo: StubDataObject = {
+          ...Object.entries(queryData)
+          // todo: add in non-cacheable fields
+        };
+        stubDataObjects.push(sdo);
+        const bdo = this.updateBdoCache(queryData as QueryResultData, sdo); // ! i don't think i should need a type assertion here, yet TS complains without it...
       }
     }
-
-    // todo: add StubDataObjects to StrubResultTree
+    this.updateResultTreeCache(
+      queryResult.ref.name,
+      queryResult.ref.variables,
+      stubDataObjects
+    );
   }
 
   /**
    * Update the BackingDataObject cache, either adding a new BDO or updating an existing BDO
    * @param data A single entity from the database.
+   * @returns the BackingDataObject created/upated.
    */
-  private updateBdoCache<Data extends QueryResultData>(data: Data): void {
-    const typedKey = makeBdoCacheKey(data['__typename'], data['__id']);
-    const existingBdo = this.bdoCache.get(typedKey);
-    const stubDataObject: StubDataObject = {
-      typedKey
-      // todo: add in non-cacheable fields
-    };
+  private updateBdoCache<Data extends QueryResultData>(
+    data: Data,
+    stubDataObject: StubDataObject
+  ): BackingDataObject {
+    const bdoCacheKey = makeBdoCacheKey(data['__typename'], data['__id']);
+    let backingDataObject = this.bdoCache.get(bdoCacheKey);
 
-    if (existingBdo) {
+    if (backingDataObject) {
       // BDO already exists, so update its values from the new data.
       for (const [key, value] of Object.entries(data)) {
         // key = "id" or "title", etc.
-        existingBdo.updateFromServer(value, key);
+        backingDataObject.updateFromServer(value, key);
       }
-      existingBdo.listeners.add(stubDataObject);
+      backingDataObject.listeners.add(stubDataObject);
     } else {
       // BDO does not exist, so create a new one.
       const serverValues = new Map<string, Value>(Object.entries(data));
-      const backingDataObject = new BackingDataObject(
-        typedKey,
+      backingDataObject = new BackingDataObject(
+        bdoCacheKey,
         [stubDataObject],
         serverValues
       );
-      this.bdoCache.set(typedKey, backingDataObject);
+      this.bdoCache.set(bdoCacheKey, backingDataObject);
     }
+    return backingDataObject;
+  }
+
+  /**
+   * Update the StubResultTree cache, either adding a new StubResultTree or updating an existing
+   * StubResultTree
+   * @param data A single entity from the database.
+   */
+  private updateResultTreeCache<Variables>(
+    queryName: string,
+    variables: Variables,
+    stubDataObjects: StubDataObject[]
+  ): void {
+    const resultTreeCacheKey = makeResultTreeCacheKey(queryName, variables);
+    this.resultTreeCache.set(resultTreeCacheKey, stubDataObjects);
   }
 }
