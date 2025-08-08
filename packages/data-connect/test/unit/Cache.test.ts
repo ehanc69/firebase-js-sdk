@@ -97,16 +97,26 @@ interface Movie extends StubDataObject {
   id: string;
   title: string;
   releaseYear: number;
-  reviews: Review[];
+  reviews?: Review[];
+  reviewCount?: number;
+  primaryGenre?: object;
 }
 
+// Test Data - Reviewers
 const reviewer1: Reviewer = {
   __typename: 'Reviewer',
   __id: '101',
   id: '101',
   name: 'John Doe'
 };
+const reviewer2: Reviewer = {
+  __typename: 'Reviewer',
+  __id: '102',
+  id: '102',
+  name: 'Jane Smith'
+};
 
+// Test Data - Reviews
 const review1: Review = {
   __typename: 'Review',
   __id: '201',
@@ -114,22 +124,46 @@ const review1: Review = {
   text: 'Amazing!',
   reviewer: reviewer1
 };
+const review2: Review = {
+  __typename: 'Review',
+  __id: '202',
+  id: '202',
+  text: 'A must-see.',
+  reviewer: reviewer2
+};
 
-const movieWithReviews: Movie = {
+// Test Data - Movies
+const movieSimple1: Movie = {
   __typename: 'Movie',
   __id: '1',
   id: '1',
-  title: 'Inception',
-  releaseYear: 2010,
-  reviews: [review1]
+  title: 'The Matrix',
+  releaseYear: 1999
 };
 
-const movieWithoutReviews: Movie = {
+const movieSimple2: Movie = {
   __typename: 'Movie',
   __id: '2',
   id: '2',
-  title: 'The Matrix',
-  releaseYear: 1999,
+  title: 'The Dark Knight',
+  releaseYear: 2008
+};
+
+const movieWithReviews: Movie = {
+  __typename: 'Movie',
+  __id: '3',
+  id: '3',
+  title: 'Inception',
+  releaseYear: 2010,
+  reviews: [review1, review2]
+};
+
+const movieWithEmptyReviews: Movie = {
+  __typename: 'Movie',
+  __id: '4',
+  id: '4',
+  title: 'Pulp Fiction',
+  releaseYear: 1994,
   reviews: []
 };
 
@@ -175,288 +209,292 @@ describe('Normalized Cache Tests', () => {
   });
 
   describe('updateCache', () => {
-    it('should create a new BDO for a new returned entity', () => {
-      // This test validates the `createBdo` path for multiple entities.
-      const queryResult = createMockQueryResult(
-        'getMovie',
-        { id: '2' },
-        { movie: movieWithoutReviews },
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
+    describe('with flat, non-nested entities', () => {
+      it('should create a new BDO for a new returned entity', () => {
+        const queryResult = createMockQueryResult(
+          'getMovie',
+          { id: movieSimple1.id },
+          { movie: movieSimple1 },
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
 
-      // 1. Check Result Tree Cache for the list of stubs
-      const resultTreeKey = Cache.makeResultTreeCacheKey('getMovie', {
-        id: '2'
+        const resultTreeKey = Cache.makeResultTreeCacheKey('getMovie', {
+          id: movieSimple1.id
+        });
+        const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+        const stubDataObject = resultTree.movie as StubDataObject;
+        expect(stubDataObject.title).to.equal(movieSimple1.title);
+
+        expect(cache.bdoCache.size).to.equal(1);
+        const bdo = cache.bdoCache.get(
+          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+        )!;
+        expect(bdo).to.exist.and.be.an.instanceof(BackingDataObject);
+        expect(bdo.listeners.has(stubDataObject)).to.be.true;
       });
-      const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
-      const stubDataObject = resultTree.movie as StubDataObject;
-      expect(stubDataObject).to.not.be.a('StubDataObjectList');
-      expect(stubDataObject).to.not.be.an('array');
-      // expect(stubDataObject).to.be.a('StubDataObject');
-      expect(stubDataObject.title).to.equal('The Matrix');
 
-      // 2. Check that four new BDOs were created in the BDO Cache
-      expect(cache.bdoCache.size).to.equal(1); // movie1
-      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
-      expect(bdo).to.exist.and.be.an.instanceof(BackingDataObject);
+      it('should create new BDOs for a list of new returned entities', () => {
+        const movies = [movieSimple1, movieSimple2];
+        const queryResult = createMockQueryResult(
+          'listMovies',
+          { limit: 2 },
+          { movies },
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
 
-      // 3. White-box test: Check that each BDO has the correct stub as a listener.
-      const listeners = bdo.listeners;
-      expect(listeners.has(stubDataObject)).to.be.true;
-    });
+        const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {
+          limit: 2
+        });
+        const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+        const stubList = resultTree.movies;
+        expect(stubList).to.be.an('array').with.lengthOf(2);
+        expect(stubList[0].title).to.equal(movieSimple1.title);
+        expect(stubList[1].title).to.equal(movieSimple2.title);
 
-    it('should create new BDOs for a list of new returned entities', () => {
-      // This test validates the `createBdo` path for multiple entities.
-      const queryResult = createMockQueryResult(
-        'listMovies',
-        { limit: 2 },
-        { movies: [movieWithReviews, movieWithoutReviews] },
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
-
-      // 1. Check Result Tree Cache for the list of stubs
-      const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {
-        limit: 2
+        expect(cache.bdoCache.size).to.equal(2);
+        const bdo1 = cache.bdoCache.get(
+          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+        )!;
+        const bdo2 = cache.bdoCache.get(
+          Cache.makeBdoCacheKey(movieSimple2.__typename, movieSimple2.__id)
+        )!;
+        expect(bdo1).to.exist;
+        expect(bdo2).to.exist;
+        expect(bdo1.listeners.has(stubList[0])).to.be.true;
+        expect(bdo2.listeners.has(stubList[1])).to.be.true;
       });
-      const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
-      const stubList = resultTree.movies;
-      expect(stubList).to.be.an('array').with.lengthOf(2);
-      expect(stubList[0].title).to.equal('Inception');
-      expect(stubList[1].title).to.equal('The Matrix');
 
-      // 2. Check that four new BDOs were created in the BDO Cache
-      expect(cache.bdoCache.size).to.equal(4); // movie1, review1, reviewer1, movie2
-      const bdo1 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
-      const bdo2 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
-      expect(bdo1).to.exist.and.be.an.instanceof(BackingDataObject);
-      expect(bdo2).to.exist.and.be.an.instanceof(BackingDataObject);
+      it('should update an existing BDO and propagate changes to all listeners', () => {
+        const listQueryResult = createMockQueryResult(
+          'listMovies',
+          {},
+          { movies: [movieSimple1] },
+          options,
+          dc
+        );
+        cache.updateCache(listQueryResult);
 
-      // 3. White-box test: Check that each BDO has the correct stub as a listener.
-      const listeners1 = bdo1.listeners;
-      const listeners2 = bdo2.listeners;
-      expect(listeners1.has(stubList[0])).to.be.true;
-      expect(listeners2.has(stubList[1])).to.be.true;
-    });
+        const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
+        const originalStub =
+          cache.resultTreeCache.get(resultTreeKey)!.movies[0];
+        expect(originalStub.title).to.equal(movieSimple1.title);
+        expect(cache.bdoCache.size).to.equal(1);
 
-    it('should update an existing BDO and propagate changes to all listeners', () => {
-      // This test validates the `updateBdo` path and the reactivity mechanism.
-      // Step 1: Cache a list of movies, implicitly calling `createBdo`.
-      const listQueryResult = createMockQueryResult(
-        'listMovies',
-        {},
-        {
-          movies: [movieWithoutReviews]
-        },
-        options,
-        dc
-      );
-      cache.updateCache(listQueryResult);
+        const updatedMovie = {
+          ...movieSimple1,
+          title: 'The Matrix Reloaded'
+        };
+        const singleQueryResult = createMockQueryResult(
+          'getMovie',
+          { id: movieSimple1.id },
+          { movie: updatedMovie },
+          options,
+          dc
+        );
+        cache.updateCache(singleQueryResult);
 
-      // Get the original stub from the list to check it later
-      const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
-      const originalStub = cache.resultTreeCache.get(resultTreeKey)!.movies[0];
-      expect(originalStub.title).to.equal('The Matrix');
-      expect(cache.bdoCache.size).to.equal(1); // movie1
+        expect(cache.bdoCache.size).to.equal(1);
+        const newStub = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('getMovie', { id: movieSimple1.id })
+        )!.movie as StubDataObject;
+        expect(newStub.title).to.equal(updatedMovie.title);
+        expect(originalStub.title).to.equal(updatedMovie.title);
 
-      // Step 2: A new query result comes in with updated data for the same movie.
-      // This should trigger the `updateBdo` logic path.
-      const updatedMovie2 = {
-        ...movieWithoutReviews,
-        title: 'The Matrix Reloaded'
-      };
-      const singleQueryResult = createMockQueryResult(
-        'getMovie',
-        { id: '2' },
-        { movie: updatedMovie2 },
-        options,
-        dc
-      );
-      cache.updateCache(singleQueryResult);
+        const bdo = cache.bdoCache.get(
+          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+        )!;
+        expect(bdo.listeners.size).to.equal(2);
+        expect(bdo.listeners.has(originalStub)).to.be.true;
+        expect(bdo.listeners.has(newStub)).to.be.true;
+      });
 
-      // Assertions
-      // 1. No new BDO was created; the existing one was found and updated.
-      expect(cache.bdoCache.size).to.equal(1);
+      it('should handle empty lists in query results gracefully', () => {
+        const queryResult = createMockQueryResult(
+          'searchMovies',
+          { title: 'NonExistent' },
+          { movies: [] },
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
 
-      // 2. The new stub from the getMovie query has the new title.
-      const newStub = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovie', { id: '2' })
-      )!.movie as StubDataObject;
-      expect(newStub.title).to.equal('The Matrix Reloaded');
+        const resultTree = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('searchMovies', { title: 'NonExistent' })
+        );
+        expect(resultTree).to.exist;
+        const stubList = resultTree!.movies as StubDataObject[];
+        expect(stubList).to.be.an('array').with.lengthOf(0);
+        expect(cache.bdoCache.size).to.equal(0);
+      });
 
-      // 3. CRITICAL: The original stub in the list was also updated via the listener mechanism.
-      // This confirms that `updateFromServer` correctly notified all listeners.
-      expect(originalStub.title).to.equal('The Matrix Reloaded');
-
-      // 4. White-box test: The BDO now has two listeners (the original list stub and the new single-item stub).
-      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
-      const listeners = bdo.listeners;
-      expect(listeners.size).to.equal(2);
-      expect(listeners.has(originalStub)).to.be.true;
-      expect(listeners.has(newStub)).to.be.true;
-    });
-
-    it('should handle empty lists in query results gracefully', () => {
-      const queryResult = createMockQueryResult(
-        'searchMovies',
-        { title: 'NonExistent' },
-        { movies: [] },
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
-
-      const resultTree = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('searchMovies', { title: 'NonExistent' })
-      );
-      expect(resultTree).to.exist;
-      const stubList = resultTree!.movies as StubDataObject[];
-      expect(stubList).to.be.an('array').with.lengthOf(0);
-      expect(cache.bdoCache.size).to.equal(0);
-    });
-
-    it('should correctly normalize nested entities', () => {
-      const queryResult = createMockQueryResult(
-        'getMovieWithReviews',
-        { id: '1' },
-        { movie: movieWithReviews },
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
-
-      // 1. Check that BDOs were created for Movie, Review, and Reviewer
-      expect(cache.bdoCache.size).to.equal(3);
-      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Movie', '1'))).to.be
-        .true;
-      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Review', '201'))).to.be
-        .true;
-      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Reviewer', '101'))).to.be
-        .true;
-
-      // 2. Check the stub result tree for correct structure
-      const resultTree = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovieWithReviews', { id: '1' })
-      )!;
-      const movieStub = resultTree.movie as Movie;
-      expect(movieStub.title).to.equal('Inception');
-      expect(movieStub.reviews).to.be.an('array').with.lengthOf(1);
-      const reviewStub = movieStub.reviews[0];
-      expect(reviewStub.text).to.equal('Amazing!');
-      expect(reviewStub.reviewer.name).to.equal('John Doe');
-
-      // 3. Check that stubs are distinct objects from BDOs
-      const movieBdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
-      expect(movieStub).to.not.equal(movieBdo);
-    });
-
-    it('should propagate changes from a nested entity to all parent listeners', () => {
-      // 1. Cache a movie with its review
-      const movieQueryResult = createMockQueryResult(
-        'getMovie',
-        { id: '1' },
-        { movie: movieWithReviews },
-        options,
-        dc
-      );
-      cache.updateCache(movieQueryResult);
-
-      const movieStub = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
-      )!.movie as Movie;
-      expect(movieStub.reviews[0].text).to.equal('Amazing!');
-
-      // 2. A new query updates the review text
-      const updatedReview = {
-        ...review1,
-        text: 'Actually, it was just okay.'
-      };
-      const reviewQueryResult = createMockQueryResult(
-        'getReview',
-        { id: '201' },
-        { review: updatedReview },
-        options,
-        dc
-      );
-      cache.updateCache(reviewQueryResult);
-
-      // 3. Assert that the original movie stub now reflects the updated review text
-      expect(cache.bdoCache.size).to.equal(3); // BDOs should be updated, not created
-      expect(movieStub.reviews[0].text).to.equal('Actually, it was just okay.');
-    });
-
-    it('should handle non-normalizable data by storing it on the stub', () => {
-      // Movie with an aggregate field and a related object without a primary key
-      const queryData = {
-        movie: {
-          ...movieWithReviews,
-          __typename: 'Movie',
-          __id: '1',
-          // Non-normalizable aggregate field
-          reviewCount: 1,
-          // Related object without a primary key (__id)
-          primaryGenre: {
-            __typename: 'Genre',
-            name: 'Sci-Fi'
+      it('should handle null values in query results gracefully', () => {
+        const queryData = {
+          movie: {
+            ...movieSimple1,
+            reviews: null
           }
-        }
-      };
+        };
+        const queryResult = createMockQueryResult(
+          'getMovie',
+          { id: movieSimple1.id },
+          queryData,
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
 
-      const queryResult = createMockQueryResult(
-        'getMovieWithExtra',
-        { id: '1' },
-        queryData,
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
-
-      // 1. Check that BDOs were created for normalizable types only
-      expect(cache.bdoCache.size).to.equal(3); // Movie, Review, Reviewer
-      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Movie', '1'))).to.be
-        .true;
-      // CRITICAL: No BDO should be created for Genre
-      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Genre', ''))).to.be
-        .false;
-
-      // 2. Check that non-normalizable fields are present on the stub
-      const resultTree = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovieWithExtra', { id: '1' })
-      )!;
-      const movieStub = resultTree.movie as Movie;
-      expect(movieStub.reviewCount).to.equal(1);
-      expect(movieStub.primaryGenre).to.deep.equal({
-        __typename: 'Genre',
-        name: 'Sci-Fi'
+        const resultTree = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('getMovie', { id: movieSimple1.id })
+        )!;
+        const movieStub = resultTree.movie as Movie;
+        expect(movieStub.title).to.equal(movieSimple1.title);
+        expect(movieStub.reviews).to.be.null;
+        expect(cache.bdoCache.size).to.equal(1);
       });
     });
 
-    it('should handle null values in query results gracefully', () => {
-      const queryData = {
-        movie: {
-          ...movieWithReviews,
-          reviews: null // The list of reviews is null
-        }
-      };
-      const queryResult = createMockQueryResult(
-        'getMovie',
-        { id: '1' },
-        queryData,
-        options,
-        dc
-      );
-      cache.updateCache(queryResult);
+    describe('with nested entities', () => {
+      it('should correctly normalize a single entity with nested objects', () => {
+        const queryResult = createMockQueryResult(
+          'getMovieWithReviews',
+          { id: movieWithReviews.id },
+          { movie: movieWithReviews },
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
 
-      const resultTree = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
-      )!;
-      const movieStub = resultTree.movie as Movie;
-      expect(movieStub.title).to.equal('Inception');
-      expect(movieStub.reviews).to.be.null;
-      expect(cache.bdoCache.size).to.equal(1);
+        expect(cache.bdoCache.size).to.equal(5); // Movie, 2 Reviews, 2 Reviewers
+        expect(
+          cache.bdoCache.has(
+            Cache.makeBdoCacheKey(
+              movieWithReviews.__typename,
+              movieWithReviews.__id
+            )
+          )
+        ).to.be.true;
+        expect(
+          cache.bdoCache.has(
+            Cache.makeBdoCacheKey(review1.__typename, review1.__id)
+          )
+        ).to.be.true;
+        expect(
+          cache.bdoCache.has(
+            Cache.makeBdoCacheKey(reviewer1.__typename, reviewer1.__id)
+          )
+        ).to.be.true;
+
+        const resultTree = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('getMovieWithReviews', {
+            id: movieWithReviews.id
+          })
+        )!;
+        const movieStub = resultTree.movie as Movie;
+        expect(movieStub.title).to.equal(movieWithReviews.title);
+        expect(movieStub.reviews).to.be.an('array').with.lengthOf(2);
+        const reviewStub = movieStub.reviews![0];
+        expect(reviewStub.text).to.equal(review1.text);
+        expect(reviewStub.reviewer.name).to.equal(reviewer1.name);
+      });
+
+      it('should correctly normalize a list of entities with nested objects', () => {
+        const movies = [movieWithReviews, movieWithEmptyReviews];
+        const queryResult = createMockQueryResult(
+          'listMovies',
+          {},
+          { movies },
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
+
+        // movieWithReviews (1 movie, 2 reviews, 2 reviewers) + movieWithEmptyReviews (1 movie) = 6 BDOs
+        expect(cache.bdoCache.size).to.equal(6);
+
+        const resultTree = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('listMovies', {})
+        )!;
+        const stubs = resultTree.movies as Movie[];
+        expect(stubs[0].title).to.equal(movieWithReviews.title);
+        expect(stubs[0].reviews).to.have.lengthOf(2);
+        expect(stubs[0].reviews![0].text).to.equal(review1.text);
+        expect(stubs[1].title).to.equal(movieWithEmptyReviews.title);
+        expect(stubs[1].reviews).to.have.lengthOf(0);
+      });
+
+      it('should propagate changes from a nested entity to all parent listeners', () => {
+        const movieQueryResult = createMockQueryResult(
+          'getMovie',
+          { id: movieWithReviews.id },
+          { movie: movieWithReviews },
+          options,
+          dc
+        );
+        cache.updateCache(movieQueryResult);
+
+        const movieStub = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('getMovie', { id: movieWithReviews.id })
+        )!.movie as Movie;
+        expect(movieStub.reviews![0].text).to.equal(review1.text);
+
+        const updatedReview = {
+          ...review1,
+          text: 'Actually, it was just okay.'
+        };
+        const reviewQueryResult = createMockQueryResult(
+          'getReview',
+          { id: review1.id },
+          { review: updatedReview },
+          options,
+          dc
+        );
+        cache.updateCache(reviewQueryResult);
+
+        expect(cache.bdoCache.size).to.equal(5); // Movie, 2 Reviews, 2 Reviewers
+        expect(movieStub.reviews![0].text).to.equal(updatedReview.text);
+      });
+
+      it('should handle non-normalizable data by storing it on the stub', () => {
+        const queryData = {
+          movie: {
+            ...movieWithReviews,
+            reviewCount: 2,
+            primaryGenre: {
+              __typename: 'Genre',
+              name: 'Sci-Fi'
+            }
+          }
+        };
+
+        const queryResult = createMockQueryResult(
+          'getMovieWithExtra',
+          { id: movieWithReviews.id },
+          queryData,
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
+
+        expect(cache.bdoCache.size).to.equal(5); // Movie, 2 Reviews, 2 Reviewers
+        expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Genre', ''))).to.be
+          .false;
+
+        const resultTree = cache.resultTreeCache.get(
+          Cache.makeResultTreeCacheKey('getMovieWithExtra', {
+            id: movieWithReviews.id
+          })
+        )!;
+        const movieStub = resultTree.movie as Movie;
+        expect(movieStub.reviewCount).to.equal(2);
+        expect(movieStub.primaryGenre).to.deep.equal({
+          __typename: 'Genre',
+          name: 'Sci-Fi'
+        });
+      });
     });
   });
 });
