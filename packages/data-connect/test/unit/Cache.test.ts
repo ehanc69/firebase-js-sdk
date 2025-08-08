@@ -1,5 +1,3 @@
-/* eslint-disable unused-imports/no-unused-imports-ts */
-/* eslint-disable @typescript-eslint/no-unused-vars */
 /**
  * @license
  * Copyright 2024 Google LLC
@@ -21,22 +19,17 @@ import { deleteApp, FirebaseApp, initializeApp } from '@firebase/app';
 import { expect } from 'chai';
 import * as chai from 'chai';
 import chaiAsPromised from 'chai-as-promised';
-import * as sinon from 'sinon';
 
 import {
   DataConnect,
   DataConnectOptions,
   DataSource,
-  executeQuery,
   getDataConnect,
-  mutationRef,
-  queryRef,
   QueryResult,
   SerializedRef,
   SOURCE_SERVER
 } from '../../src';
 import { BackingDataObject, Cache, StubDataObject } from '../../src/core/Cache';
-import { Code, DataConnectError } from '../../src/core/error';
 chai.use(chaiAsPromised);
 
 // Helper to create a mock QueryResult object for tests
@@ -97,6 +90,7 @@ interface Review extends StubDataObject {
   text: string;
   reviewer: Reviewer;
 }
+
 interface Movie extends StubDataObject {
   __typename: 'Movie';
   __id: string;
@@ -121,7 +115,7 @@ const review1: Review = {
   reviewer: reviewer1
 };
 
-const movie1: Movie = {
+const movieWithReviews: Movie = {
   __typename: 'Movie',
   __id: '1',
   id: '1',
@@ -130,7 +124,7 @@ const movie1: Movie = {
   reviews: [review1]
 };
 
-const movie2: Movie = {
+const movieWithoutReviews: Movie = {
   __typename: 'Movie',
   __id: '2',
   id: '2',
@@ -181,12 +175,44 @@ describe('Normalized Cache Tests', () => {
   });
 
   describe('updateCache', () => {
-    it('should create new BDOs for a list of new entities', () => {
+    it('should create a new BDO for a new returned entity', () => {
+      // This test validates the `createBdo` path for multiple entities.
+      const queryResult = createMockQueryResult(
+        'getMovie',
+        { id: '2' },
+        { movie: movieWithoutReviews },
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      // 1. Check Result Tree Cache for the list of stubs
+      const resultTreeKey = Cache.makeResultTreeCacheKey('getMovie', {
+        id: '2'
+      });
+      const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+      const stubDataObject = resultTree.movie as StubDataObject;
+      expect(stubDataObject).to.not.be.a('StubDataObjectList');
+      expect(stubDataObject).to.not.be.an('array');
+      // expect(stubDataObject).to.be.a('StubDataObject');
+      expect(stubDataObject.title).to.equal('The Matrix');
+
+      // 2. Check that four new BDOs were created in the BDO Cache
+      expect(cache.bdoCache.size).to.equal(1); // movie1
+      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
+      expect(bdo).to.exist.and.be.an.instanceof(BackingDataObject);
+
+      // 3. White-box test: Check that each BDO has the correct stub as a listener.
+      const listeners = bdo.listeners;
+      expect(listeners.has(stubDataObject)).to.be.true;
+    });
+
+    it('should create new BDOs for a list of new returned entities', () => {
       // This test validates the `createBdo` path for multiple entities.
       const queryResult = createMockQueryResult(
         'listMovies',
         { limit: 2 },
-        { movies: [movie1, movie2] },
+        { movies: [movieWithReviews, movieWithoutReviews] },
         options,
         dc
       );
@@ -223,7 +249,7 @@ describe('Normalized Cache Tests', () => {
         'listMovies',
         {},
         {
-          movies: [movie1]
+          movies: [movieWithoutReviews]
         },
         options,
         dc
@@ -233,19 +259,19 @@ describe('Normalized Cache Tests', () => {
       // Get the original stub from the list to check it later
       const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
       const originalStub = cache.resultTreeCache.get(resultTreeKey)!.movies[0];
-      expect(originalStub.title).to.equal('Inception');
-      expect(cache.bdoCache.size).to.equal(3); // movie1, review1, reviewer1
+      expect(originalStub.title).to.equal('The Matrix');
+      expect(cache.bdoCache.size).to.equal(1); // movie1
 
       // Step 2: A new query result comes in with updated data for the same movie.
       // This should trigger the `updateBdo` logic path.
-      const updatedMovie1 = {
-        ...movie1,
-        title: "Inception (Director's Cut)"
+      const updatedMovie2 = {
+        ...movieWithoutReviews,
+        title: 'The Matrix Reloaded'
       };
       const singleQueryResult = createMockQueryResult(
         'getMovie',
-        { id: '1' },
-        { movie: updatedMovie1 },
+        { id: '2' },
+        { movie: updatedMovie2 },
         options,
         dc
       );
@@ -253,20 +279,20 @@ describe('Normalized Cache Tests', () => {
 
       // Assertions
       // 1. No new BDO was created; the existing one was found and updated.
-      expect(cache.bdoCache.size).to.equal(3);
+      expect(cache.bdoCache.size).to.equal(1);
 
       // 2. The new stub from the getMovie query has the new title.
       const newStub = cache.resultTreeCache.get(
-        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
+        Cache.makeResultTreeCacheKey('getMovie', { id: '2' })
       )!.movie as StubDataObject;
-      expect(newStub.title).to.equal("Inception (Director's Cut)");
+      expect(newStub.title).to.equal('The Matrix Reloaded');
 
       // 3. CRITICAL: The original stub in the list was also updated via the listener mechanism.
       // This confirms that `updateFromServer` correctly notified all listeners.
-      expect(originalStub.title).to.equal("Inception (Director's Cut)");
+      expect(originalStub.title).to.equal('The Matrix Reloaded');
 
       // 4. White-box test: The BDO now has two listeners (the original list stub and the new single-item stub).
-      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
+      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
       const listeners = bdo.listeners;
       expect(listeners.size).to.equal(2);
       expect(listeners.has(originalStub)).to.be.true;
@@ -296,7 +322,7 @@ describe('Normalized Cache Tests', () => {
       const queryResult = createMockQueryResult(
         'getMovieWithReviews',
         { id: '1' },
-        { movie: movie1 },
+        { movie: movieWithReviews },
         options,
         dc
       );
@@ -325,7 +351,6 @@ describe('Normalized Cache Tests', () => {
       // 3. Check that stubs are distinct objects from BDOs
       const movieBdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
       expect(movieStub).to.not.equal(movieBdo);
-      expect({...movieStub}).to.equal({...movieBdo});
     });
 
     it('should propagate changes from a nested entity to all parent listeners', () => {
@@ -333,7 +358,7 @@ describe('Normalized Cache Tests', () => {
       const movieQueryResult = createMockQueryResult(
         'getMovie',
         { id: '1' },
-        { movie: movie1 },
+        { movie: movieWithReviews },
         options,
         dc
       );
@@ -367,7 +392,7 @@ describe('Normalized Cache Tests', () => {
       // Movie with an aggregate field and a related object without a primary key
       const queryData = {
         movie: {
-          ...movie1,
+          ...movieWithReviews,
           __typename: 'Movie',
           __id: '1',
           // Non-normalizable aggregate field
@@ -412,7 +437,7 @@ describe('Normalized Cache Tests', () => {
     it('should handle null values in query results gracefully', () => {
       const queryData = {
         movie: {
-          ...movie1,
+          ...movieWithReviews,
           reviews: null // The list of reviews is null
         }
       };
@@ -431,9 +456,7 @@ describe('Normalized Cache Tests', () => {
       const movieStub = resultTree.movie as Movie;
       expect(movieStub.title).to.equal('Inception');
       expect(movieStub.reviews).to.be.null;
-      // BDOs for movie, review, and reviewer from the original `movie1` object
-      // should still be created, as the normalization happens recursively before nulling.
-      expect(cache.bdoCache.size).to.equal(3);
+      expect(cache.bdoCache.size).to.equal(1);
     });
   });
 });

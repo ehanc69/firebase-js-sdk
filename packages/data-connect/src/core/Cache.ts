@@ -24,6 +24,8 @@ type Value = string | number | boolean | null | undefined | object | Value[];
 /**
  * Defines the shape of query result data that represents a single entity.
  * It must have __typename and __id for normalization.
+ * 
+ * TODO: this is just a StubDataObject isn't it...?
  */
 export interface QueryResultData {
   [key: string]: Value;
