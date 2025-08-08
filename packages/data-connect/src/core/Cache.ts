@@ -18,15 +18,15 @@
 
 import { QueryResult } from '../api';
 
-/** Value is any FDC scalar value. */ // TODO: make this more accurate
+/** Value is any FDC scalar value. */
+// TODO: make this more accurate... what type should we use to represent any FDC scalar value?
 type Value = string | number | boolean | null | undefined | object | Value[];
 
 /**
  * Defines the shape of query result data that represents a single entity.
  * It must have __typename and __id for normalization.
- * 
- * TODO: this is just a StubDataObject isn't it...?
  */
+// TODO: this is just a StubDataObject isn't it...?
 export interface QueryResultData {
   [key: string]: Value;
   __typename?: string;
@@ -51,6 +51,18 @@ function isCacheableQueryResultData(value: unknown): value is QueryResultData {
 /**
  * Interface for a stub result tree, with fields which are stub data objects
  */
+// TODO: need a better way to represent that a query may return a single entity or a list of entities
+// ! ex: queryResult.data =
+// !   {
+// !     movies: [                    <-- list
+// !               {...movie1...},
+// !               {...movie2...},
+// !               {...movie3...}
+// !             ],
+// !     currentUser: {               <-- singleton
+// !       ...user...
+// !     }
+// !   }
 interface StubResultTree {
   [key: string]: StubDataObject | StubDataObjectList;
 }
@@ -125,7 +137,9 @@ export class BackingDataObject {
    */
   updateLocal(value: Value, key: string): void {
     this.localValues.set(key, value);
-    // notify listeners
+    for (const listener of this.listeners) {
+      listener[key] = value;
+    }
   }
 }
 
@@ -192,7 +206,7 @@ export class Cache {
       const existingBdo = this.bdoCache.get(bdoCacheKey);
 
       // data is a single "movie" or "actor"
-      // key is a field of the returned data
+      // key is a field of the returned data, such as "name"
       for (const key in data) {
         // eslint-disable-next-line no-prototype-builtins
         if (data.hasOwnProperty(key)) {
@@ -223,7 +237,7 @@ export class Cache {
   }
 
   /**
-   * Creates a new BackingDataObject and adds it to the cache.
+   * Creates a new BackingDataObject and adds it to the cache. This obejct
    * @param bdoCacheKey The cache key for the new BDO.
    * @param data The entity data from the server.
    * @param stubDataObject The first stub to listen to this BDO.
@@ -233,7 +247,6 @@ export class Cache {
     data: QueryResultData,
     stubDataObject: StubDataObject
   ): void {
-    // TODO: don't cache non-cacheable fields!
     const serverValues = new Map<string, Value>(Object.entries(data));
     const newBdo = new BackingDataObject(bdoCacheKey, serverValues);
     newBdo.listeners.add(stubDataObject);
@@ -252,6 +265,9 @@ export class Cache {
     stubDataObject: StubDataObject
   ): void {
     // TODO: don't cache non-cacheable fields!
+    // ! how do we know that a field is not cacheable...?
+    // ! are we assuming entities themselves will be entirely not cacheable?
+    // ! ex: queryResult.data = {movies: {...cacheable...}, currentRating: {...not cacheable...}}
     for (const [key, value] of Object.entries(data)) {
       backingDataObject.updateFromServer(value, key);
     }
