@@ -26,8 +26,8 @@ type Value = string | number | boolean | null | undefined | object | Value[];
  */
 export interface QueryResultData {
   [key: string]: Value;
-  __typename?: string;
-  __id?: string;
+  __typename: string;
+  __id: string;
 }
 
 /**
@@ -68,7 +68,15 @@ export class BackingDataObject {
   private serverValues: Map<string, Value>;
 
   /** A list of listeners (StubDataObjects) that need to be updated when values change. */
-  listeners: Set<StubDataObject>;
+  private listeners: Set<StubDataObject>;
+  /** Add a listener to this BDO */
+  addListener(listener: StubDataObject): void {
+    this.listeners.add(listener);
+  }
+  /** Remove a listener from this BDO */
+  removeListener(listener: StubDataObject): void {
+    this.listeners.delete(listener);
+  }
 
   constructor(
     typedKey: string,
@@ -173,13 +181,15 @@ export class Cache {
     for (const key in queryResult.data) {
       const queryData = queryResult.data[key];
       if (Array.isArray(queryData)) {
+        const sdoList: StubDataObjectList = [];
         queryData.forEach(qd => {
           const sdo: StubDataObject = {
             ...qd
             // todo: add in non-cacheable fields
           };
-          stubResultTree[key] = sdo;
+          sdoList.push(sdo);
           const bdo: BackingDataObject = this.updateBdoCache(qd, sdo);
+          stubResultTree[key] = sdoList;
         });
       } else {
         const sdo: StubDataObject = {
@@ -211,7 +221,7 @@ export class Cache {
         // key = "id" or "title", etc.
         backingDataObject.updateFromServer(value, key);
       }
-      backingDataObject.listeners.add(stubDataObject);
+      backingDataObject.addListener(stubDataObject);
     } else {
       // BDO does not exist, so create a new one.
       const serverValues = new Map<string, Value>(Object.entries(data));
