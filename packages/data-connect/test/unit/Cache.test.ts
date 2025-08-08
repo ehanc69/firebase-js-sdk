@@ -39,7 +39,6 @@ import { BackingDataObject, Cache, StubDataObject } from '../../src/core/Cache';
 import { Code, DataConnectError } from '../../src/core/error';
 chai.use(chaiAsPromised);
 
-// TODO: convert to actually test cache stuffs...
 // Helper to create a mock QueryResult object for tests
 function createMockQueryResult<Data extends object, Variables>(
   queryName: string,
@@ -84,20 +83,51 @@ const options: DataConnectOptions = {
 };
 
 // Sample entity data for testing
+interface Reviewer extends StubDataObject {
+  __typename: 'Reviewer';
+  __id: string;
+  id: string;
+  name: string;
+}
+
+interface Review extends StubDataObject {
+  __typename: 'Review';
+  __id: string;
+  id: string;
+  text: string;
+  reviewer: Reviewer;
+}
 interface Movie extends StubDataObject {
-  __typename: string;
+  __typename: 'Movie';
   __id: string;
   id: string;
   title: string;
   releaseYear: number;
+  reviews: Review[];
 }
+
+const reviewer1: Reviewer = {
+  __typename: 'Reviewer',
+  __id: '101',
+  id: '101',
+  name: 'John Doe'
+};
+
+const review1: Review = {
+  __typename: 'Review',
+  __id: '201',
+  id: '201',
+  text: 'Amazing!',
+  reviewer: reviewer1
+};
 
 const movie1: Movie = {
   __typename: 'Movie',
   __id: '1',
   id: '1',
   title: 'Inception',
-  releaseYear: 2010
+  releaseYear: 2010,
+  reviews: [review1]
 };
 
 const movie2: Movie = {
@@ -105,7 +135,8 @@ const movie2: Movie = {
   __id: '2',
   id: '2',
   title: 'The Matrix',
-  releaseYear: 1999
+  releaseYear: 1999,
+  reviews: []
 };
 
 describe('Normalized Cache Tests', () => {
@@ -172,7 +203,7 @@ describe('Normalized Cache Tests', () => {
       expect(stubList[1].title).to.equal('The Matrix');
 
       // 2. Check that two new BDOs were created in the BDO Cache
-      expect(cache.bdoCache.size).to.equal(2);
+      expect(cache.bdoCache.size).to.equal(4); // movie1, review1, reviewer1, movie2
       const bdo1 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
       const bdo2 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
       expect(bdo1).to.exist.and.be.an.instanceof(BackingDataObject);
@@ -203,7 +234,7 @@ describe('Normalized Cache Tests', () => {
       const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
       const originalStub = cache.resultTreeCache.get(resultTreeKey)!.movies[0];
       expect(originalStub.title).to.equal('Inception');
-      expect(cache.bdoCache.size).to.equal(1);
+      expect(cache.bdoCache.size).to.equal(3); // movie1, review1, reviewer1
 
       // Step 2: A new query result comes in with updated data for the same movie.
       // This should trigger the `updateBdo` logic path.
@@ -222,7 +253,7 @@ describe('Normalized Cache Tests', () => {
 
       // Assertions
       // 1. No new BDO was created; the existing one was found and updated.
-      expect(cache.bdoCache.size).to.equal(1);
+      expect(cache.bdoCache.size).to.equal(3);
 
       // 2. The new stub from the getMovie query has the new title.
       const newStub = cache.resultTreeCache.get(
@@ -259,6 +290,150 @@ describe('Normalized Cache Tests', () => {
       const stubList = resultTree!.movies as StubDataObject[];
       expect(stubList).to.be.an('array').with.lengthOf(0);
       expect(cache.bdoCache.size).to.equal(0);
+    });
+
+    it('should correctly normalize nested entities', () => {
+      const queryResult = createMockQueryResult(
+        'getMovieWithReviews',
+        { id: '1' },
+        { movie: movie1 },
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      // 1. Check that BDOs were created for Movie, Review, and Reviewer
+      expect(cache.bdoCache.size).to.equal(3);
+      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Movie', '1'))).to.be
+        .true;
+      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Review', '201'))).to.be
+        .true;
+      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Reviewer', '101'))).to.be
+        .true;
+
+      // 2. Check the stub result tree for correct structure
+      const resultTree = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('getMovieWithReviews', { id: '1' })
+      )!;
+      const movieStub = resultTree.movie as Movie;
+      expect(movieStub.title).to.equal('Inception');
+      expect(movieStub.reviews).to.be.an('array').with.lengthOf(1);
+      const reviewStub = movieStub.reviews[0];
+      expect(reviewStub.text).to.equal('Amazing!');
+      expect(reviewStub.reviewer.name).to.equal('John Doe');
+
+      // 3. Check that stubs are distinct objects from BDOs
+      const movieBdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
+      expect(movieStub).to.not.equal(movieBdo);
+      expect(movieStub.backingData).to.equal(movieBdo);
+    });
+
+    it('should propagate changes from a nested entity to all parent listeners', () => {
+      // 1. Cache a movie with its review
+      const movieQueryResult = createMockQueryResult(
+        'getMovie',
+        { id: '1' },
+        { movie: movie1 },
+        options,
+        dc
+      );
+      cache.updateCache(movieQueryResult);
+
+      const movieStub = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
+      )!.movie as Movie;
+      expect(movieStub.reviews[0].text).to.equal('Amazing!');
+
+      // 2. A new query updates the review text
+      const updatedReview = {
+        ...review1,
+        text: 'Actually, it was just okay.'
+      };
+      const reviewQueryResult = createMockQueryResult(
+        'getReview',
+        { id: '201' },
+        { review: updatedReview },
+        options,
+        dc
+      );
+      cache.updateCache(reviewQueryResult);
+
+      // 3. Assert that the original movie stub now reflects the updated review text
+      expect(cache.bdoCache.size).to.equal(3); // BDOs should be updated, not created
+      expect(movieStub.reviews[0].text).to.equal('Actually, it was just okay.');
+    });
+
+    it('should handle non-normalizable data by storing it on the stub', () => {
+      // Movie with an aggregate field and a related object without a primary key
+      const queryData = {
+        movie: {
+          ...movie1,
+          __typename: 'Movie',
+          __id: '1',
+          // Non-normalizable aggregate field
+          reviewCount: 1,
+          // Related object without a primary key (__id)
+          primaryGenre: {
+            __typename: 'Genre',
+            name: 'Sci-Fi'
+          }
+        }
+      };
+
+      const queryResult = createMockQueryResult(
+        'getMovieWithExtra',
+        { id: '1' },
+        queryData,
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      // 1. Check that BDOs were created for normalizable types only
+      expect(cache.bdoCache.size).to.equal(3); // Movie, Review, Reviewer
+      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Movie', '1'))).to.be
+        .true;
+      // CRITICAL: No BDO should be created for Genre
+      expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Genre', ''))).to.be
+        .false;
+
+      // 2. Check that non-normalizable fields are present on the stub
+      const resultTree = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('getMovieWithExtra', { id: '1' })
+      )!;
+      const movieStub = resultTree.movie as Movie;
+      expect(movieStub.reviewCount).to.equal(1);
+      expect(movieStub.primaryGenre).to.deep.equal({
+        __typename: 'Genre',
+        name: 'Sci-Fi'
+      });
+    });
+
+    it('should handle null values in query results gracefully', () => {
+      const queryData = {
+        movie: {
+          ...movie1,
+          reviews: null // The list of reviews is null
+        }
+      };
+      const queryResult = createMockQueryResult(
+        'getMovie',
+        { id: '1' },
+        queryData,
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      const resultTree = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
+      )!;
+      const movieStub = resultTree.movie as Movie;
+      expect(movieStub.title).to.equal('Inception');
+      expect(movieStub.reviews).to.be.null;
+      // BDOs for movie, review, and reviewer from the original `movie1` object
+      // should still be created, as the normalization happens recursively before nulling.
+      expect(cache.bdoCache.size).to.equal(3);
     });
   });
 });
