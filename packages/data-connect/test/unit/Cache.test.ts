@@ -202,7 +202,7 @@ describe('Normalized Cache Tests', () => {
       expect(stubList[0].title).to.equal('Inception');
       expect(stubList[1].title).to.equal('The Matrix');
 
-      // 2. Check that two new BDOs were created in the BDO Cache
+      // 2. Check that four new BDOs were created in the BDO Cache
       expect(cache.bdoCache.size).to.equal(4); // movie1, review1, reviewer1, movie2
       const bdo1 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
       const bdo2 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;

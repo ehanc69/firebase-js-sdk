@@ -27,8 +27,8 @@ type Value = string | number | boolean | null | undefined | object | Value[];
  */
 export interface QueryResultData {
   [key: string]: Value;
-  __typename: string;
-  __id: string;
+  __typename?: string;
+  __id?: string;
 }
 
 /**
@@ -169,46 +169,55 @@ export class Cache {
       queryResult.ref.name,
       queryResult.ref.variables
     );
-    const stubResultTree: StubResultTree = {};
-
-    // eslint-disable-next-line guard-for-in
-    for (const key in queryResult.data) {
-      const entityOrEntityList = (queryResult.data as Record<string, unknown>)[
-        key
-      ];
-      if (Array.isArray(entityOrEntityList)) {
-        const sdoList: StubDataObjectList = [];
-        entityOrEntityList.forEach(entity => {
-          if (isCacheableQueryResultData(entity)) {
-            const stubDataObject = this.cacheData(entity);
-            sdoList.push(stubDataObject);
-          }
-        });
-        stubResultTree[key] = sdoList;
-      } else if (isCacheableQueryResultData(entityOrEntityList)) {
-        const stubDataObject = this.cacheData(entityOrEntityList);
-        stubResultTree[key] = stubDataObject;
-      }
-    }
+    const stubResultTree = this.normalize(queryResult.data) as StubResultTree;
     this.resultTreeCache.set(resultTreeCacheKey, stubResultTree);
   }
 
   /**
-   * Caches a single entity: gets or creates its BDO and returns a linked stub.
-   * @param data A single entity object from the query result.
-   * @returns A StubDataObject linked to the entity's BackingDataObject.
+   * Recursively traverses a data object, normalizing cacheable entities into BDOs
+   * and replacing them with stubs.
+   * @param data The data to normalize (can be an object, array, or primitive).
+   * @returns The normalized data with stubs.
    */
-  private cacheData(data: QueryResultData): StubDataObject {
-    const stubDataaObject: StubDataObject = { ...data };
-    const bdoCacheKey = Cache.makeBdoCacheKey(data.__typename, data.__id);
-    const existingBdo = this.bdoCache.get(bdoCacheKey);
-
-    if (existingBdo) {
-      this.updateBdo(existingBdo, data, stubDataaObject);
-    } else {
-      this.createBdo(bdoCacheKey, data, stubDataaObject);
+  private normalize(data: QueryResultData | Value): Value | StubDataObject {
+    if (Array.isArray(data)) {
+      return data.map(item => this.normalize(item));
     }
-    return stubDataaObject;
+
+    if (isCacheableQueryResultData(data)) {
+      const stub: StubDataObject = {};
+      const bdoCacheKey = Cache.makeBdoCacheKey(data.__typename, data.__id);
+      const existingBdo = this.bdoCache.get(bdoCacheKey);
+
+      // data is a single "movie" or "actor"
+      // key is a field of the returned data
+      for (const key in data) {
+        // eslint-disable-next-line no-prototype-builtins
+        if (data.hasOwnProperty(key)) {
+          stub[key] = this.normalize(data[key]);
+        }
+      }
+
+      if (existingBdo) {
+        this.updateBdo(existingBdo, stub, stub);
+      } else {
+        this.createBdo(bdoCacheKey, stub, stub);
+      }
+      return stub;
+    }
+
+    if (typeof data === 'object' && data !== null) {
+      const newObj: { [key: string]: Value } = {};
+      for (const key in data) {
+        // eslint-disable-next-line no-prototype-builtins
+        if (data.hasOwnProperty(key)) {
+          newObj[key] = this.normalize(data[key]);
+        }
+      }
+      return newObj;
+    }
+
+    return data;
   }
 
   /**
