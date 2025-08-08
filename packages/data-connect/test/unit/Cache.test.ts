@@ -325,7 +325,7 @@ describe('Normalized Cache Tests', () => {
       // 3. Check that stubs are distinct objects from BDOs
       const movieBdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
       expect(movieStub).to.not.equal(movieBdo);
-      expect(movieStub.backingData).to.equal(movieBdo);
+      expect({...movieStub}).to.equal({...movieBdo});
     });
 
     it('should propagate changes from a nested entity to all parent listeners', () => {
