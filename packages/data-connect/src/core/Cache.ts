@@ -22,12 +22,28 @@ import { QueryResult } from '../api';
 type Value = string | number | boolean | null | undefined | object | Value[];
 
 /**
- * Defines the shape of query result data - "movies", "actor", etc.
+ * Defines the shape of query result data that represents a single entity.
+ * It must have __typename and __id for normalization.
  */
 export interface QueryResultData {
   [key: string]: Value;
   __typename: string;
   __id: string;
+}
+
+/**
+ * A type guard to check if a value is a QueryResultData object.
+ * @param value The value to check.
+ * @returns True if the value is a QueryResultData object.
+ */
+function isCacheableQueryResultData(value: unknown): value is QueryResultData {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    '__typename' in value &&
+    '__id' in value
+  );
 }
 
 /**
@@ -38,7 +54,7 @@ interface StubResultTree {
 }
 
 /**
- * Interface for a stub data object, which contains a reference to its BackingDataObject.
+ * Interface for a stub data object, which acts as a "live" view into cached data.
  * Generated Data implements this interface.
  * @public
  */
@@ -54,48 +70,51 @@ export interface StubDataObject {
 class StubDataObjectList extends Array<StubDataObject> {}
 
 /**
- * A class used to hold entity values across all queries.
+ * A class used to hold the single source of truth for an entity's values across all queries.
  * @public
  */
 export class BackingDataObject {
   /**
    * Stable unique key identifying the entity across types.
-   * TypeName + CompositePrimaryKey.
+   * Format: TypeName|ID
    */
   readonly typedKey: string;
 
   /** Represents values received from the server. */
   private serverValues: Map<string, Value>;
 
-  /** A list of listeners (StubDataObjects) that need to be updated when values change. */
+  /** A set of listeners (StubDataObjects) that need to be updated when values change. */
   private listeners: Set<StubDataObject>;
-  /** Add a listener to this BDO */
+
+  /**
+   * Adds a StubDataObject to the set of listeners for this BackingDataObject.
+   * @param listener The StubDataObject to add.
+   */
   addListener(listener: StubDataObject): void {
     this.listeners.add(listener);
   }
-  /** Remove a listener from this BDO */
+
+  /**
+   * Removes a StubDataObject from the set of listeners.
+   * @param listener The StubDataObject to remove.
+   */
   removeListener(listener: StubDataObject): void {
     this.listeners.delete(listener);
   }
 
-  constructor(
-    typedKey: string,
-    listeners: StubDataObject[],
-    serverValues: Map<string, Value>
-  ) {
+  constructor(typedKey: string, serverValues: Map<string, Value>) {
     this.typedKey = typedKey;
-    this.listeners = new Set(listeners);
+    this.listeners = new Set();
     this.serverValues = serverValues;
   }
 
   /**
-   * Updates the value for a named property from the server.
+   * Updates the value for a named property from the server and notifies all listeners.
    * @param value The new value from the server.
    * @param key The key of the property to update.
    */
   updateFromServer(value: Value, key: string): void {
     this.serverValues.set(key, value);
-    // update listeners
     for (const listener of this.listeners) {
       listener[key] = value;
     }
@@ -129,16 +148,10 @@ export class BackingDataObject {
  * @public
  */
 export class Cache {
-  /**
-   * A map of ([query + variables] --> stubs returned from that query).
-   * @public
-   */
+  /** A map of [query + variables] --> StubDataObjects returned from that query. */
   resultTreeCache = new Map<string, StubResultTree>();
 
-  /**
-   * A map of ([entity typename + id] --> BackingDataObject for that entity).
-   * @public
-   */
+  /** A map of [entity typename + id] --> BackingDataObject for that entity. */
   bdoCache = new Map<string, BackingDataObject>();
 
   /**
@@ -146,7 +159,6 @@ export class Cache {
    * @param queryName The name of the query.
    * @param vars The variables used in the query.
    * @returns A unique cache key string.
-   * @public
    */
   static makeResultTreeCacheKey(queryName: string, vars: unknown): string {
     return queryName + '|' + JSON.stringify(vars);
@@ -157,18 +169,16 @@ export class Cache {
    * @param typename The typename of the entity being cached.
    * @param id The unique id / primary key of this entity.
    * @returns A unique cache key string.
-   * @public
    */
   static makeBdoCacheKey(typename: string, id: unknown): string {
     return typename + '|' + JSON.stringify(id);
   }
 
   /**
-   * Updates the cache with the results of a query.
+   * Updates the cache with the results of a query. This is the main entry point.
    * @param queryResult The result of the query.
-   * @public
    */
-  updateCache<Data extends QueryResultData | QueryResultData[], Variables>(
+  updateCache<Data extends object, Variables>(
     queryResult: QueryResult<Data, Variables>
   ): void {
     const resultTreeCacheKey = Cache.makeResultTreeCacheKey(
@@ -176,62 +186,80 @@ export class Cache {
       queryResult.ref.variables
     );
     const stubResultTree: StubResultTree = {};
-    // key = "movies" or "actor", etc.
+
     // eslint-disable-next-line guard-for-in
     for (const key in queryResult.data) {
-      const queryData = queryResult.data[key];
-      if (Array.isArray(queryData)) {
+      const entityOrEntityList = (queryResult.data as Record<string, unknown>)[
+        key
+      ];
+      if (Array.isArray(entityOrEntityList)) {
         const sdoList: StubDataObjectList = [];
-        queryData.forEach(qd => {
-          const sdo: StubDataObject = {
-            ...qd
-            // todo: add in non-cacheable fields
-          };
-          sdoList.push(sdo);
-          const bdo: BackingDataObject = this.updateBdoCache(qd, sdo);
-          stubResultTree[key] = sdoList;
+        entityOrEntityList.forEach(entity => {
+          if (isCacheableQueryResultData(entity)) {
+            const stubDataObject = this.cacheData(entity);
+            sdoList.push(stubDataObject);
+          }
         });
-      } else {
-        const sdo: StubDataObject = {
-          ...(queryData as QueryResultData) // ! i don't think i should need a type assertion here, yet TS complains without it...
-          // todo: add in non-cacheable fields
-        };
-        stubResultTree[key] = sdo;
-        const bdo = this.updateBdoCache(queryData as QueryResultData, sdo); // ! i don't think i should need a type assertion here, yet TS complains without it...
+        stubResultTree[key] = sdoList;
+      } else if (isCacheableQueryResultData(entityOrEntityList)) {
+        const stubDataObject = this.cacheData(entityOrEntityList);
+        stubResultTree[key] = stubDataObject;
       }
     }
     this.resultTreeCache.set(resultTreeCacheKey, stubResultTree);
   }
 
   /**
-   * Update the BackingDataObject cache, either adding a new BDO or updating an existing BDO
-   * @param data A single entity from the database.
-   * @returns the BackingDataObject created/upated.
+   * Caches a single entity: gets or creates its BDO and returns a linked stub.
+   * @param data A single entity object from the query result.
+   * @returns A StubDataObject linked to the entity's BackingDataObject.
    */
-  private updateBdoCache<Data extends QueryResultData>(
-    data: Data,
-    stubDataObject: StubDataObject
-  ): BackingDataObject {
-    const bdoCacheKey = Cache.makeBdoCacheKey(data['__typename'], data['__id']);
-    let backingDataObject = this.bdoCache.get(bdoCacheKey);
+  private cacheData(data: QueryResultData): StubDataObject {
+    const stubDataaObject: StubDataObject = { ...data };
+    const bdoCacheKey = Cache.makeBdoCacheKey(data.__typename, data.__id);
+    const existingBdo = this.bdoCache.get(bdoCacheKey);
 
-    if (backingDataObject) {
-      // BDO already exists, so update its values from the new data.
-      for (const [key, value] of Object.entries(data)) {
-        // key = "id" or "title", etc.
-        backingDataObject.updateFromServer(value, key);
-      }
-      backingDataObject.addListener(stubDataObject);
+    if (existingBdo) {
+      this.updateBdo(existingBdo, data, stubDataaObject);
     } else {
-      // BDO does not exist, so create a new one.
-      const serverValues = new Map<string, Value>(Object.entries(data));
-      backingDataObject = new BackingDataObject(
-        bdoCacheKey,
-        [stubDataObject],
-        serverValues
-      );
-      this.bdoCache.set(bdoCacheKey, backingDataObject);
+      this.createBdo(bdoCacheKey, data, stubDataaObject);
     }
-    return backingDataObject;
+    return stubDataaObject;
+  }
+
+  /**
+   * Creates a new BackingDataObject and adds it to the cache.
+   * @param bdoCacheKey The cache key for the new BDO.
+   * @param data The entity data from the server.
+   * @param stubDataObject The first stub to listen to this BDO.
+   */
+  private createBdo(
+    bdoCacheKey: string,
+    data: QueryResultData,
+    stubDataObject: StubDataObject
+  ): void {
+    // TODO: don't cache non-cacheable fields!
+    const serverValues = new Map<string, Value>(Object.entries(data));
+    const newBdo = new BackingDataObject(bdoCacheKey, serverValues);
+    newBdo.addListener(stubDataObject);
+    this.bdoCache.set(bdoCacheKey, newBdo);
+  }
+
+  /**
+   * Updates an existing BackingDataObject with new data and a new listener.
+   * @param backingDataObject The existing BackingDataObject to update.
+   * @param data The new entity data from the server.
+   * @param stubDataObject The new stub to add as a listener.
+   */
+  private updateBdo(
+    backingDataObject: BackingDataObject,
+    data: QueryResultData,
+    stubDataObject: StubDataObject
+  ): void {
+    // TODO: don't cache non-cacheable fields!
+    for (const [key, value] of Object.entries(data)) {
+      backingDataObject.updateFromServer(value, key);
+    }
+    backingDataObject.addListener(stubDataObject);
   }
 }
