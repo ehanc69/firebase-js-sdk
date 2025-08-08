@@ -84,23 +84,7 @@ export class BackingDataObject {
   private serverValues: Map<string, Value>;
 
   /** A set of listeners (StubDataObjects) that need to be updated when values change. */
-  private listeners: Set<StubDataObject>;
-
-  /**
-   * Adds a StubDataObject to the set of listeners for this BackingDataObject.
-   * @param listener The StubDataObject to add.
-   */
-  addListener(listener: StubDataObject): void {
-    this.listeners.add(listener);
-  }
-
-  /**
-   * Removes a StubDataObject from the set of listeners.
-   * @param listener The StubDataObject to remove.
-   */
-  removeListener(listener: StubDataObject): void {
-    this.listeners.delete(listener);
-  }
+  readonly listeners: Set<StubDataObject>;
 
   constructor(typedKey: string, serverValues: Map<string, Value>) {
     this.typedKey = typedKey;
@@ -241,7 +225,7 @@ export class Cache {
     // TODO: don't cache non-cacheable fields!
     const serverValues = new Map<string, Value>(Object.entries(data));
     const newBdo = new BackingDataObject(bdoCacheKey, serverValues);
-    newBdo.addListener(stubDataObject);
+    newBdo.listeners.add(stubDataObject);
     this.bdoCache.set(bdoCacheKey, newBdo);
   }
 
@@ -260,6 +244,6 @@ export class Cache {
     for (const [key, value] of Object.entries(data)) {
       backingDataObject.updateFromServer(value, key);
     }
-    backingDataObject.addListener(stubDataObject);
+    backingDataObject.listeners.add(stubDataObject);
   }
 }

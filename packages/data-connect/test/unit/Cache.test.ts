@@ -1,3 +1,5 @@
+/* eslint-disable unused-imports/no-unused-imports-ts */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /**
  * @license
  * Copyright 2024 Google LLC
@@ -15,66 +17,248 @@
  * limitations under the License.
  */
 
-import { FirebaseAuthTokenData } from '@firebase/auth-interop-types';
+import { deleteApp, FirebaseApp, initializeApp } from '@firebase/app';
 import { expect } from 'chai';
 import * as chai from 'chai';
 import chaiAsPromised from 'chai-as-promised';
 import * as sinon from 'sinon';
 
-import { DataConnectOptions } from '../../src';
 import {
-  AuthTokenListener,
-  AuthTokenProvider
-} from '../../src/core/FirebaseAuthProvider';
-import { initializeFetch } from '../../src/network/fetch';
-import { RESTTransport } from '../../src/network/transport/rest';
+  DataConnect,
+  DataConnectOptions,
+  DataSource,
+  executeQuery,
+  getDataConnect,
+  mutationRef,
+  queryRef,
+  QueryResult,
+  SerializedRef,
+  SOURCE_SERVER
+} from '../../src';
+import { BackingDataObject, Cache, StubDataObject } from '../../src/core/Cache';
+import { Code, DataConnectError } from '../../src/core/error';
 chai.use(chaiAsPromised);
+
+// TODO: convert to actually test cache stuffs...
+// Helper to create a mock QueryResult object for tests
+function createMockQueryResult<Data extends object, Variables>(
+  queryName: string,
+  variables: Variables,
+  data: Data,
+  dataConnectOptions: DataConnectOptions,
+  dataconnect: DataConnect,
+  source: DataSource = SOURCE_SERVER
+): QueryResult<Data, Variables> {
+  const fetchTime = 'NOW';
+
+  return {
+    ref: {
+      name: queryName,
+      variables,
+      refType: 'query',
+      dataConnect: dataconnect
+    },
+    data,
+    source,
+    fetchTime,
+    toJSON(): SerializedRef<Data, Variables> {
+      return {
+        data,
+        source,
+        fetchTime,
+        refInfo: {
+          name: queryName,
+          variables,
+          connectorConfig: dataConnectOptions
+        }
+      };
+    }
+  };
+}
+
 const options: DataConnectOptions = {
   connector: 'c',
   location: 'l',
   projectId: 'p',
   service: 's'
 };
-const INITIAL_TOKEN = 'initial token';
-class FakeAuthProvider implements AuthTokenProvider {
-  private token: string | null = INITIAL_TOKEN;
-  addTokenChangeListener(listener: AuthTokenListener): void {}
-  getToken(forceRefresh: boolean): Promise<FirebaseAuthTokenData | null> {
-    if (!forceRefresh) {
-      return Promise.resolve({ accessToken: this.token! });
-    }
-    return Promise.resolve({ accessToken: 'testToken' });
-  }
-  setToken(_token: string | null): void {
-    this.token = _token;
-  }
+
+// Sample entity data for testing
+interface Movie extends StubDataObject {
+  __typename: string;
+  __id: string;
+  id: string;
+  title: string;
+  releaseYear: number;
 }
 
-function getFakeFetchImpl(data: unknown, status: number): sinon.SinonStub {
-  return sinon.stub().returns(
-    Promise.resolve({
-      json: () => {
-        return Promise.resolve({ data, errors: [] });
-      },
-      status
-    } as Response)
-  );
-}
+const movie1: Movie = {
+  __typename: 'Movie',
+  __id: '1',
+  id: '1',
+  title: 'Inception',
+  releaseYear: 2010
+};
 
-describe('Cache', () => {
-  let fakeFetchImpl: sinon.SinonStub;
-  afterEach(() => {
-    fakeFetchImpl.resetHistory();
+const movie2: Movie = {
+  __typename: 'Movie',
+  __id: '2',
+  id: '2',
+  title: 'The Matrix',
+  releaseYear: 1999
+};
+
+describe('Normalized Cache Tests', () => {
+  let dc: DataConnect;
+  let app: FirebaseApp;
+  let cache: Cache;
+  const APPID = 'MYAPPID';
+  const APPNAME = 'MYAPPNAME';
+
+  beforeEach(() => {
+    app = initializeApp({ projectId: 'p', appId: APPID }, APPNAME);
+    dc = getDataConnect(app, {
+      connector: 'c',
+      location: 'l',
+      service: 's'
+    });
+    cache = new Cache();
   });
-  it('PLAYGROUND', async () => {
-    const data = {
-      movies: []
-    };
-    fakeFetchImpl = getFakeFetchImpl(data, 200);
-    initializeFetch(fakeFetchImpl);
-    const authProvider = new FakeAuthProvider();
-    const rt = new RESTTransport(options, undefined, undefined, authProvider);
-    const fetchResult = await rt.invokeQuery('test', null);
-    expect(fetchResult.data).to.equal({ data, errors: [] });
+  afterEach(async () => {
+    await dc._delete();
+    await deleteApp(app);
+  });
+
+  describe('Key Generation', () => {
+    it('should create a consistent result tree cache key', () => {
+      const key1 = Cache.makeResultTreeCacheKey('listMovies', { limit: 10 });
+      const key2 = Cache.makeResultTreeCacheKey('listMovies', { limit: 10 });
+      const key3 = Cache.makeResultTreeCacheKey('listMovies', { limit: 20 });
+      expect(key1).to.equal(key2);
+      expect(key1).to.not.equal(key3);
+      expect(key1).to.equal('listMovies|{"limit":10}');
+    });
+
+    it('should create a consistent BDO cache key', () => {
+      const key1 = Cache.makeBdoCacheKey('Movie', '1');
+      const key2 = Cache.makeBdoCacheKey('Movie', '1');
+      const key3 = Cache.makeBdoCacheKey('Actor', '1');
+      expect(key1).to.equal(key2);
+      expect(key1).to.not.equal(key3);
+      expect(key1).to.equal('Movie|"1"');
+    });
+  });
+
+  describe('updateCache', () => {
+    it('should create new BDOs for a list of new entities', () => {
+      // This test validates the `createBdo` path for multiple entities.
+      const queryResult = createMockQueryResult(
+        'listMovies',
+        { limit: 2 },
+        { movies: [movie1, movie2] },
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      // 1. Check Result Tree Cache for the list of stubs
+      const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {
+        limit: 2
+      });
+      const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+      const stubList = resultTree.movies;
+      expect(stubList).to.be.an('array').with.lengthOf(2);
+      expect(stubList[0].title).to.equal('Inception');
+      expect(stubList[1].title).to.equal('The Matrix');
+
+      // 2. Check that two new BDOs were created in the BDO Cache
+      expect(cache.bdoCache.size).to.equal(2);
+      const bdo1 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
+      const bdo2 = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '2'))!;
+      expect(bdo1).to.exist.and.be.an.instanceof(BackingDataObject);
+      expect(bdo2).to.exist.and.be.an.instanceof(BackingDataObject);
+
+      // 3. White-box test: Check that each BDO has the correct stub as a listener.
+      const listeners1 = bdo1.listeners;
+      const listeners2 = bdo2.listeners;
+      expect(listeners1.has(stubList[0])).to.be.true;
+      expect(listeners2.has(stubList[1])).to.be.true;
+    });
+
+    it('should update an existing BDO and propagate changes to all listeners', () => {
+      // This test validates the `updateBdo` path and the reactivity mechanism.
+      // Step 1: Cache a list of movies, implicitly calling `createBdo`.
+      const listQueryResult = createMockQueryResult(
+        'listMovies',
+        {},
+        {
+          movies: [movie1]
+        },
+        options,
+        dc
+      );
+      cache.updateCache(listQueryResult);
+
+      // Get the original stub from the list to check it later
+      const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
+      const originalStub = cache.resultTreeCache.get(resultTreeKey)!.movies[0];
+      expect(originalStub.title).to.equal('Inception');
+      expect(cache.bdoCache.size).to.equal(1);
+
+      // Step 2: A new query result comes in with updated data for the same movie.
+      // This should trigger the `updateBdo` logic path.
+      const updatedMovie1 = {
+        ...movie1,
+        title: "Inception (Director's Cut)"
+      };
+      const singleQueryResult = createMockQueryResult(
+        'getMovie',
+        { id: '1' },
+        { movie: updatedMovie1 },
+        options,
+        dc
+      );
+      cache.updateCache(singleQueryResult);
+
+      // Assertions
+      // 1. No new BDO was created; the existing one was found and updated.
+      expect(cache.bdoCache.size).to.equal(1);
+
+      // 2. The new stub from the getMovie query has the new title.
+      const newStub = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('getMovie', { id: '1' })
+      )!.movie as StubDataObject;
+      expect(newStub.title).to.equal("Inception (Director's Cut)");
+
+      // 3. CRITICAL: The original stub in the list was also updated via the listener mechanism.
+      // This confirms that `updateFromServer` correctly notified all listeners.
+      expect(originalStub.title).to.equal("Inception (Director's Cut)");
+
+      // 4. White-box test: The BDO now has two listeners (the original list stub and the new single-item stub).
+      const bdo = cache.bdoCache.get(Cache.makeBdoCacheKey('Movie', '1'))!;
+      const listeners = bdo.listeners;
+      expect(listeners.size).to.equal(2);
+      expect(listeners.has(originalStub)).to.be.true;
+      expect(listeners.has(newStub)).to.be.true;
+    });
+
+    it('should handle empty lists in query results gracefully', () => {
+      const queryResult = createMockQueryResult(
+        'searchMovies',
+        { title: 'NonExistent' },
+        { movies: [] },
+        options,
+        dc
+      );
+      cache.updateCache(queryResult);
+
+      const resultTree = cache.resultTreeCache.get(
+        Cache.makeResultTreeCacheKey('searchMovies', { title: 'NonExistent' })
+      );
+      expect(resultTree).to.exist;
+      const stubList = resultTree!.movies as StubDataObject[];
+      expect(stubList).to.be.an('array').with.lengthOf(0);
+      expect(cache.bdoCache.size).to.equal(0);
+    });
   });
 });
