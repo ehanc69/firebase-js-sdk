@@ -18,28 +18,28 @@
 
 import { QueryResult } from '../api';
 
-/** Value is any FDC scalar value. */
+/** Internal utility type. Value is any FDC scalar value. */
 // TODO: make this more accurate... what type should we use to represent any FDC scalar value?
 type Value = string | number | boolean | null | undefined | object | Value[];
 
 /**
- * Defines the shape of query result data that represents a single entity.
+ * Internal utility type. Defines the shape of query result data that represents a single entity.
  * It must have __typename and __id for normalization.
  */
-// TODO: this is just a StubDataObject isn't it...?
-export interface QueryResultData {
+interface QueryResultData {
   [key: string]: Value;
   __typename?: string;
   __id?: string;
 }
 
 /**
- * A type guard to check if a value is a QueryResultData object.
+ * A type guard to check if a value is normalizeable.
  * @param value The value to check.
- * @returns True if the value is a QueryResultData object.
+ * @returns True if the value is normalizeable (it has the fields __typename and __id).
  */
-function isCacheableQueryResultData(value: unknown): value is QueryResultData {
+function isNormalizeable(value: unknown): value is QueryResultData {
   return (
+    value !== undefined &&
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
@@ -49,27 +49,16 @@ function isCacheableQueryResultData(value: unknown): value is QueryResultData {
 }
 
 /**
- * Interface for a stub result tree, with fields which are stub data objects
+ * Interface for a stub result tree, with fields which are stub data objects.
+ * @public
  */
-// TODO: need a better way to represent that a query may return a single entity or a list of entities
-// ! ex: queryResult.data =
-// !   {
-// !     movies: [                    <-- list
-// !               {...movie1...},
-// !               {...movie2...},
-// !               {...movie3...}
-// !             ],
-// !     currentUser: {               <-- singleton
-// !       ...user...
-// !     }
-// !   }
-interface StubResultTree {
+export interface StubResultTree {
   [key: string]: StubDataObject | StubDataObjectList;
 }
 
 /**
- * Interface for a stub data object, which acts as a "live" view into cached data.
- * Generated Data implements this interface.
+ * Interface for a stub data object, which acts as a snapshot view of cached data.
+ * Selection sets in generated data types extend this interface.
  * @public
  */
 export interface StubDataObject {
@@ -84,7 +73,7 @@ export interface StubDataObject {
 class StubDataObjectList extends Array<StubDataObject> {}
 
 /**
- * A class used to hold the single source of truth for an entity's values across all queries.
+ * A class used to hold an entity's normalized cached values across all queries.
  * @public
  */
 export class BackingDataObject {
@@ -107,14 +96,17 @@ export class BackingDataObject {
   }
 
   /**
-   * Updates the value for a named property from the server and notifies all listeners.
+   * Updates the value for a named property from the server and notifies all listeners which depend
+   * on that value.
    * @param value The new value from the server.
    * @param key The key of the property to update.
    */
   updateFromServer(value: Value, key: string): void {
     this.serverValues.set(key, value);
     for (const listener of this.listeners) {
-      listener[key] = value;
+      if (key in listener) {
+        listener[key] = value;
+      }
     }
   }
 
@@ -138,7 +130,9 @@ export class BackingDataObject {
   updateLocal(value: Value, key: string): void {
     this.localValues.set(key, value);
     for (const listener of this.listeners) {
-      listener[key] = value;
+      if (key in listener) {
+        listener[key] = value;
+      }
     }
   }
 }
@@ -148,8 +142,8 @@ export class BackingDataObject {
  * @public
  */
 export class Cache {
-  /** A map of [query + variables] --> StubDataObjects returned from that query. */
-  resultTreeCache = new Map<string, StubResultTree>();
+  /** A map of [query + variables] --> StubResultTree returned from that query. */
+  srtCache = new Map<string, StubResultTree>();
 
   /** A map of [entity typename + id] --> BackingDataObject for that entity. */
   bdoCache = new Map<string, BackingDataObject>();
@@ -160,7 +154,7 @@ export class Cache {
    * @param vars The variables used in the query.
    * @returns A unique cache key string.
    */
-  static makeResultTreeCacheKey(queryName: string, vars: unknown): string {
+  static srtCacheKey(queryName: string, vars: unknown): string {
     return queryName + '|' + JSON.stringify(vars);
   }
 
@@ -170,7 +164,7 @@ export class Cache {
    * @param id The unique id / primary key of this entity.
    * @returns A unique cache key string.
    */
-  static makeBdoCacheKey(typename: string, id: unknown): string {
+  static bdoCacheKey(typename: string, id: unknown): string {
     return typename + '|' + JSON.stringify(id);
   }
 
@@ -181,12 +175,12 @@ export class Cache {
   updateCache<Data extends object, Variables>(
     queryResult: QueryResult<Data, Variables>
   ): void {
-    const resultTreeCacheKey = Cache.makeResultTreeCacheKey(
+    const resultTreeCacheKey = Cache.srtCacheKey(
       queryResult.ref.name,
       queryResult.ref.variables
     );
     const stubResultTree = this.normalize(queryResult.data) as StubResultTree;
-    this.resultTreeCache.set(resultTreeCacheKey, stubResultTree);
+    this.srtCache.set(resultTreeCacheKey, stubResultTree);
   }
 
   /**
@@ -200,9 +194,9 @@ export class Cache {
       return data.map(item => this.normalize(item));
     }
 
-    if (isCacheableQueryResultData(data)) {
+    if (isNormalizeable(data)) {
       const stub: StubDataObject = {};
-      const bdoCacheKey = Cache.makeBdoCacheKey(data.__typename, data.__id);
+      const bdoCacheKey = Cache.bdoCacheKey(data.__typename, data.__id);
       const existingBdo = this.bdoCache.get(bdoCacheKey);
 
       // data is a single "movie" or "actor"

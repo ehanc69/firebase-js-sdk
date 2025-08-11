@@ -29,7 +29,11 @@ import {
   SerializedRef,
   SOURCE_SERVER
 } from '../../src';
-import { BackingDataObject, Cache, StubDataObject } from '../../src/core/Cache';
+import {
+  BackingDataObject,
+  Cache,
+  StubDataObject
+} from '../../src/core/Cache';
 chai.use(chaiAsPromised);
 
 // Helper to create a mock QueryResult object for tests
@@ -97,6 +101,7 @@ interface Movie extends StubDataObject {
   id: string;
   title: string;
   releaseYear: number;
+  description?: string;
   reviews?: Review[];
   reviewCount?: number;
   primaryGenre?: object;
@@ -190,18 +195,18 @@ describe('Normalized Cache Tests', () => {
 
   describe('Key Generation', () => {
     it('should create a consistent result tree cache key', () => {
-      const key1 = Cache.makeResultTreeCacheKey('listMovies', { limit: 10 });
-      const key2 = Cache.makeResultTreeCacheKey('listMovies', { limit: 10 });
-      const key3 = Cache.makeResultTreeCacheKey('listMovies', { limit: 20 });
+      const key1 = Cache.srtCacheKey('listMovies', { limit: 10 });
+      const key2 = Cache.srtCacheKey('listMovies', { limit: 10 });
+      const key3 = Cache.srtCacheKey('listMovies', { limit: 20 });
       expect(key1).to.equal(key2);
       expect(key1).to.not.equal(key3);
       expect(key1).to.equal('listMovies|{"limit":10}');
     });
 
     it('should create a consistent BDO cache key', () => {
-      const key1 = Cache.makeBdoCacheKey('Movie', '1');
-      const key2 = Cache.makeBdoCacheKey('Movie', '1');
-      const key3 = Cache.makeBdoCacheKey('Actor', '1');
+      const key1 = Cache.bdoCacheKey('Movie', '1');
+      const key2 = Cache.bdoCacheKey('Movie', '1');
+      const key3 = Cache.bdoCacheKey('Actor', '1');
       expect(key1).to.equal(key2);
       expect(key1).to.not.equal(key3);
       expect(key1).to.equal('Movie|"1"');
@@ -220,16 +225,16 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(queryResult);
 
-        const resultTreeKey = Cache.makeResultTreeCacheKey('getMovie', {
+        const resultTreeKey = Cache.srtCacheKey('getMovie', {
           id: movieSimple1.id
         });
-        const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+        const resultTree = cache.srtCache.get(resultTreeKey)!;
         const stubDataObject = resultTree.movie as StubDataObject;
         expect(stubDataObject.title).to.equal(movieSimple1.title);
 
         expect(cache.bdoCache.size).to.equal(1);
         const bdo = cache.bdoCache.get(
-          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+          Cache.bdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
         )!;
         expect(bdo).to.exist.and.be.an.instanceof(BackingDataObject);
         expect(bdo.listeners.has(stubDataObject)).to.be.true;
@@ -246,10 +251,10 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(queryResult);
 
-        const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {
+        const resultTreeKey = Cache.srtCacheKey('listMovies', {
           limit: 2
         });
-        const resultTree = cache.resultTreeCache.get(resultTreeKey)!;
+        const resultTree = cache.srtCache.get(resultTreeKey)!;
         const stubList = resultTree.movies;
         expect(stubList).to.be.an('array').with.lengthOf(2);
         expect(stubList[0].title).to.equal(movieSimple1.title);
@@ -257,10 +262,10 @@ describe('Normalized Cache Tests', () => {
 
         expect(cache.bdoCache.size).to.equal(2);
         const bdo1 = cache.bdoCache.get(
-          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+          Cache.bdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
         )!;
         const bdo2 = cache.bdoCache.get(
-          Cache.makeBdoCacheKey(movieSimple2.__typename, movieSimple2.__id)
+          Cache.bdoCacheKey(movieSimple2.__typename, movieSimple2.__id)
         )!;
         expect(bdo1).to.exist;
         expect(bdo2).to.exist;
@@ -268,7 +273,7 @@ describe('Normalized Cache Tests', () => {
         expect(bdo2.listeners.has(stubList[1])).to.be.true;
       });
 
-      it('should update an existing BDO and propagate changes to all listeners', () => {
+      it('should update an existing BDO and propagate changes to all listeners', async () => {
         const listQueryResult = createMockQueryResult(
           'listMovies',
           {},
@@ -278,11 +283,20 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(listQueryResult);
 
-        const resultTreeKey = Cache.makeResultTreeCacheKey('listMovies', {});
-        const originalStub =
-          cache.resultTreeCache.get(resultTreeKey)!.movies[0];
-        expect(originalStub.title).to.equal(movieSimple1.title);
+        const resultTreeKey = Cache.srtCacheKey('listMovies', {});
+        const cachedStubs = cache.srtCache.get(resultTreeKey)!.movies;
+        const cachedStub: Movie = cachedStubs[0];
+
+        expect(cachedStub.title).to.equal(movieSimple1.title);
         expect(cache.bdoCache.size).to.equal(1);
+
+        // expect BDO cache to be updated
+        expect(cache.bdoCache.size).to.equal(1);
+        const bdo = cache.bdoCache.get(
+          Cache.bdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
+        )!;
+        expect(bdo.listeners.size).to.equal(1);
+        expect(bdo.listeners.has(cachedStub)).to.be.true;
 
         const updatedMovie = {
           ...movieSimple1,
@@ -297,18 +311,16 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(singleQueryResult);
 
-        expect(cache.bdoCache.size).to.equal(1);
-        const newStub = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('getMovie', { id: movieSimple1.id })
+        // expect stubs to have been updated
+        const newStub = cache.srtCache.get(
+          Cache.srtCacheKey('getMovie', { id: movieSimple1.id })
         )!.movie as StubDataObject;
         expect(newStub.title).to.equal(updatedMovie.title);
-        expect(originalStub.title).to.equal(updatedMovie.title);
+        expect(cachedStub.title).to.equal(updatedMovie.title);
 
-        const bdo = cache.bdoCache.get(
-          Cache.makeBdoCacheKey(movieSimple1.__typename, movieSimple1.__id)
-        )!;
+        // expect BDO cache to be updated
         expect(bdo.listeners.size).to.equal(2);
-        expect(bdo.listeners.has(originalStub)).to.be.true;
+        expect(bdo.listeners.has(cachedStub)).to.be.true;
         expect(bdo.listeners.has(newStub)).to.be.true;
       });
 
@@ -322,8 +334,8 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(queryResult);
 
-        const resultTree = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('searchMovies', { title: 'NonExistent' })
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('searchMovies', { title: 'NonExistent' })
         );
         expect(resultTree).to.exist;
         const stubList = resultTree!.movies as StubDataObject[];
@@ -347,13 +359,133 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(queryResult);
 
-        const resultTree = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('getMovie', { id: movieSimple1.id })
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('getMovie', { id: movieSimple1.id })
         )!;
         const movieStub = resultTree.movie as Movie;
         expect(movieStub.title).to.equal(movieSimple1.title);
         expect(movieStub.reviews).to.be.null;
         expect(cache.bdoCache.size).to.equal(1);
+      });
+
+      it('should only update stubs that depend on the updated value', () => {
+        // 1. Cache a query that gets a movie with title and release year.
+        const movieWithDescription: Movie = {
+          __typename: 'Movie',
+          __id: '5',
+          id: '5',
+          title: 'Forrest Gump',
+          description:
+            "Life is like a box of chocolates - you never know what you're going to get!",
+          releaseYear: 1994
+        };
+        const fullQueryResult = createMockQueryResult(
+          'getMovieWithDescription',
+          { id: '5' },
+          { movie: movieWithDescription },
+          options,
+          dc
+        );
+        cache.updateCache(fullQueryResult);
+
+        // Get the stub for the full movie data.
+        const fullStub = cache.srtCache.get(
+          Cache.srtCacheKey('getMovieWithDescription', { id: '5' })
+        )!.movie as Movie;
+        expect(fullStub.title).to.equal(movieWithDescription.title);
+        expect(fullStub.releaseYear).to.equal(movieWithDescription.releaseYear);
+        expect(fullStub.description).to.equal(movieWithDescription.description);
+
+        // 2. Cache another query that gets the same movie but only with the title.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { description, ...movieWithoutDescription } =
+          movieWithDescription;
+        const partialQueryResult = createMockQueryResult(
+          'getMovieWithoutDescription',
+          { id: '5' },
+          { movie: movieWithoutDescription },
+          options,
+          dc
+        );
+        cache.updateCache(partialQueryResult);
+
+        // Get the stub for the partial movie data.
+        const partialStub = cache.srtCache.get(
+          Cache.srtCacheKey('getMovieWithoutDescription', {
+            id: '5'
+          })
+        )!.movie as Movie;
+        expect(partialStub.title).to.equal(movieWithDescription.title);
+        expect(partialStub.releaseYear).to.equal(
+          movieWithDescription.releaseYear
+        );
+        expect(partialStub).to.not.have.property('description');
+
+        // 3. A new query result comes in that updates the release year.
+        const updatedMovie = {
+          ...movieWithDescription,
+          releaseYear: movieWithDescription.releaseYear + 10, // Year updated
+          description: 'A feel-good remake of a family classic!'
+        };
+        const checkForUpdatedMovieResult = createMockQueryResult(
+          'checkForUpdatedMovie',
+          { id: '5' },
+          { movie: updatedMovie },
+          options,
+          dc
+        );
+        cache.updateCache(checkForUpdatedMovieResult);
+
+        // 4. Assert that the stubs are updated.
+        expect(fullStub.releaseYear).to.equal(updatedMovie.releaseYear);
+        expect(fullStub.description).to.equal(updatedMovie.description);
+        expect(partialStub.releaseYear).to.equal(updatedMovie.releaseYear);
+
+        // 5. Assert that the stub without releaseYear did not have its description property updated.
+        expect(partialStub).to.not.have.property('description');
+
+        // 6. White-box test: Check that the BDO has both stubs as listeners.
+        const bdo = cache.bdoCache.get(Cache.bdoCacheKey('Movie', '5'))!;
+        expect(bdo.listeners.size).to.equal(3); // fullStub, partialStub, and the stub from updateMovie
+        expect(bdo.listeners.has(fullStub)).to.be.true;
+        expect(bdo.listeners.has(partialStub)).to.be.true;
+      });
+
+      it('should handle non-normalizable data by storing it on the stub', () => {
+        const { __typename, __id, ...nonNormalizeableMovie } =
+          movieWithEmptyReviews;
+
+        const queryData = {
+          movie: {
+            ...nonNormalizeableMovie,
+            typenameCopy: __typename,
+            idCopy: __id
+          }
+        };
+
+        const queryResult = createMockQueryResult(
+          'getMovieWithExtra',
+          { id: nonNormalizeableMovie.id },
+          queryData,
+          options,
+          dc
+        );
+        cache.updateCache(queryResult);
+
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('getMovieWithExtra', {
+            id: nonNormalizeableMovie.id
+          })
+        )!;
+
+        // Single movie StubResultTree
+        const stub = resultTree.movie as Movie;
+        expect(stub.id).to.equal(nonNormalizeableMovie.id);
+        expect(stub.title).to.equal(nonNormalizeableMovie.title);
+        expect(stub.releaseYear).to.equal(nonNormalizeableMovie.releaseYear);
+
+        // No BDOs should be cached
+        expect(cache.bdoCache.size).to.equal(0);
       });
     });
 
@@ -371,7 +503,7 @@ describe('Normalized Cache Tests', () => {
         expect(cache.bdoCache.size).to.equal(5); // Movie, 2 Reviews, 2 Reviewers
         expect(
           cache.bdoCache.has(
-            Cache.makeBdoCacheKey(
+            Cache.bdoCacheKey(
               movieWithReviews.__typename,
               movieWithReviews.__id
             )
@@ -379,17 +511,17 @@ describe('Normalized Cache Tests', () => {
         ).to.be.true;
         expect(
           cache.bdoCache.has(
-            Cache.makeBdoCacheKey(review1.__typename, review1.__id)
+            Cache.bdoCacheKey(review1.__typename, review1.__id)
           )
         ).to.be.true;
         expect(
           cache.bdoCache.has(
-            Cache.makeBdoCacheKey(reviewer1.__typename, reviewer1.__id)
+            Cache.bdoCacheKey(reviewer1.__typename, reviewer1.__id)
           )
         ).to.be.true;
 
-        const resultTree = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('getMovieWithReviews', {
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('getMovieWithReviews', {
             id: movieWithReviews.id
           })
         )!;
@@ -415,8 +547,8 @@ describe('Normalized Cache Tests', () => {
         // movieWithReviews (1 movie, 2 reviews, 2 reviewers) + movieWithEmptyReviews (1 movie) = 6 BDOs
         expect(cache.bdoCache.size).to.equal(6);
 
-        const resultTree = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('listMovies', {})
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('listMovies', {})
         )!;
         const stubs = resultTree.movies as Movie[];
         expect(stubs[0].title).to.equal(movieWithReviews.title);
@@ -436,8 +568,8 @@ describe('Normalized Cache Tests', () => {
         );
         cache.updateCache(movieQueryResult);
 
-        const movieStub = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('getMovie', { id: movieWithReviews.id })
+        const movieStub = cache.srtCache.get(
+          Cache.srtCacheKey('getMovie', { id: movieWithReviews.id })
         )!.movie as Movie;
         expect(movieStub.reviews![0].text).to.equal(review1.text);
 
@@ -458,43 +590,88 @@ describe('Normalized Cache Tests', () => {
         expect(movieStub.reviews![0].text).to.equal(updatedReview.text);
       });
 
+
       it('should handle non-normalizable data by storing it on the stub', () => {
+        const { __typename, __id, ...nonNormalizeableMovie } = movieWithReviews;
+
         const queryData = {
           movie: {
-            ...movieWithReviews,
-            reviewCount: 2,
-            primaryGenre: {
-              __typename: 'Genre',
-              name: 'Sci-Fi'
-            }
+            ...nonNormalizeableMovie,
+            typenameCopy: __typename,
+            idCopy: __id
           }
         };
 
         const queryResult = createMockQueryResult(
           'getMovieWithExtra',
-          { id: movieWithReviews.id },
+          { id: nonNormalizeableMovie.id },
           queryData,
           options,
           dc
         );
         cache.updateCache(queryResult);
 
-        expect(cache.bdoCache.size).to.equal(5); // Movie, 2 Reviews, 2 Reviewers
-        expect(cache.bdoCache.has(Cache.makeBdoCacheKey('Genre', ''))).to.be
-          .false;
-
-        const resultTree = cache.resultTreeCache.get(
-          Cache.makeResultTreeCacheKey('getMovieWithExtra', {
-            id: movieWithReviews.id
+        const resultTree = cache.srtCache.get(
+          Cache.srtCacheKey('getMovieWithExtra', {
+            id: nonNormalizeableMovie.id
           })
         )!;
-        const movieStub = resultTree.movie as Movie;
-        expect(movieStub.reviewCount).to.equal(2);
-        expect(movieStub.primaryGenre).to.deep.equal({
-          __typename: 'Genre',
-          name: 'Sci-Fi'
-        });
+
+        // Single movie StubResultTree
+        const stub = resultTree.movie as Movie;
+        expect(stub.id).to.equal(nonNormalizeableMovie.id);
+        expect(stub.title).to.equal(nonNormalizeableMovie.title);
+        expect(stub.releaseYear).to.equal(nonNormalizeableMovie.releaseYear);
+
+        // 4 BDOs should be cached - Review1, Review2, Reviewer1, Reviewer2
+        expect(cache.bdoCache.size).to.equal(4);
+        expect(
+          cache.bdoCache.has(
+            Cache.bdoCacheKey(
+              movieWithReviews.__typename,
+              movieWithReviews.__id
+            )
+          )
+        ).to.be.false;
       });
     });
   });
 });
+
+// // eslint-disable-next-line @typescript-eslint/naming-convention
+// export interface Movie_Key {
+//   id: string;
+//   __typename?: 'Movie_Key';
+// }
+
+// // eslint-disable-next-line @typescript-eslint/naming-convention
+// export interface Actor_Key {
+//   id: string;
+//   __typename?: 'Actor_Key';
+// }
+
+// /** The selection set for the movies field of the ListMovies query */
+// // eslint-disable-next-line @typescript-eslint/naming-convention
+// interface ListMovies_Movies extends StubDataObject {
+//   id: string;
+//   title: string;
+//   imageUrl: string;
+//   releaseYear?: number | null;
+//   genre?: string | null;
+//   rating?: number | null;
+//   tags?: string[] | null;
+//   description?: string | null;
+// }
+
+// // eslint-disable-next-line @typescript-eslint/naming-convention
+// interface ListMovies_Actor extends StubDataObject {
+//   id: string;
+//   name: string;
+// }
+
+// /** The shape of the data returned from this query */
+// export interface ListMoviesData extends StubResultTree {
+//   // eslint-disable-next-line @typescript-eslint/array-type
+//   movies: (ListMovies_Movies & Movie_Key)[];
+//   actor: ListMovies_Actor & Actor_Key;
+// }
