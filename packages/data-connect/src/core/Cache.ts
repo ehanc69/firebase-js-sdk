@@ -18,26 +18,81 @@
 
 import { QueryResult } from '../api';
 
-/** Internal utility type. Value is any FDC scalar value. */
-// TODO: make this more accurate... what type should we use to represent any FDC scalar value?
-type Value = string | number | boolean | null | undefined | object | Value[];
+/** Internal utility type. Scalar is any FDC scalar value. */
+type Scalar = undefined | null | boolean | number | string;
 
 /**
- * Internal utility type. Defines the shape of query result data that represents a single entity.
- * It must have __typename and __id for normalization.
+ * Checks if the provided value is a valid SelectionSet.
+ *
+ * Note that this does not check the contents of fields in the selection set, so it's possible that
+ * one of the fields, or a nested field, contains an invalid type (such as an array of mixed types).
+ * @param value the value to check
+ * @returns True if the value is a valid SelectionSet
  */
-interface QueryResultData {
-  [key: string]: Value;
-  __typename?: string;
-  __id?: string;
+function isScalar(value: unknown): value is Scalar {
+  if (Array.isArray(value)) {
+    return false;
+  }
+  switch (typeof value) {
+    case 'undefined':
+    case 'boolean':
+    case 'number':
+    case 'string':
+      return true;
+    case 'object':
+      // null has typeof === 'object' for historical reasons.
+      // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof#typeof_null
+      return value === null;
+    default:
+      return false;
+  }
 }
 
 /**
- * A type guard to check if a value is normalizeable.
- * @param value The value to check.
- * @returns True if the value is normalizeable (it has the fields __typename and __id).
+ * Internal utility type. Defines the shape of selection set for a table. It must have
+ * __typename and __id for normalization.
  */
-function isNormalizeable(value: unknown): value is QueryResultData {
+interface SelectionSet {
+  [field: string]: Scalar | Scalar[] | SelectionSet | SelectionSet[];
+}
+
+/**
+ * A type guard to check if a value is, at the top level, a valid SelectionSet (it is an object,
+ * which is not an array, and which has at least one field).
+ *
+ * Note that this is only a "top-level" check - this does not check the selection set recursively,
+ * or the contents of arrays in the selection set, so it's possible  that one of the fields, or a
+ * nested field, contains a type which would make it an invalid FDC selection set (such as an array
+ * of mixed types).
+ * @param value the value to check
+ * @returns True if the value is a valid SelectionSet at the top level of the object
+ */
+function isTopLevelSelectionSet(value: unknown): value is SelectionSet {
+  // null has typeof === 'object' for historical reasons.
+  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof#typeof_null
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length >= 1
+  );
+}
+
+/**
+ * Internal utility type. Defines the shape of query result data, made up of selection sets on tables.
+ */
+interface QueryResultData {
+  [tableName: string]: SelectionSet | SelectionSet[];
+}
+
+/**
+ * A type guard to check if a value is cacheable (it has the fields __typename and __id).
+ * @param value The value to check.
+ * @returns True if the value is cacheable (it has the fields __typename and __id).
+ */
+function isNormalizeable(
+  value: SelectionSet | Scalar
+): value is StubDataObject {
   return (
     value !== undefined &&
     value !== null &&
@@ -58,11 +113,13 @@ export interface StubResultTree {
 
 /**
  * Interface for a stub data object, which acts as a snapshot view of cached data.
- * Selection sets in generated data types extend this interface.
+ * Selection sets in cached generated data types extend this interface.
  * @public
  */
-export interface StubDataObject {
-  [key: string]: Value | StubDataObject;
+export interface StubDataObject extends SelectionSet {
+  [key: string]: Scalar | SelectionSet;
+  __typename: string;
+  __id: string;
 }
 
 /**
@@ -84,12 +141,12 @@ export class BackingDataObject {
   readonly typedKey: string;
 
   /** Represents values received from the server. */
-  private serverValues: Map<string, Value>;
+  private serverValues: Map<string, Scalar>;
 
   /** A set of listeners (StubDataObjects) that need to be updated when values change. */
   readonly listeners: Set<StubDataObject>;
 
-  constructor(typedKey: string, serverValues: Map<string, Value>) {
+  constructor(typedKey: string, serverValues: Map<string, Scalar>) {
     this.typedKey = typedKey;
     this.listeners = new Set();
     this.serverValues = serverValues;
@@ -101,7 +158,7 @@ export class BackingDataObject {
    * @param value The new value from the server.
    * @param key The key of the property to update.
    */
-  updateFromServer(value: Value, key: string): void {
+  updateFromServer(value: Scalar, key: string): void {
     this.serverValues.set(key, value);
     for (const listener of this.listeners) {
       if (key in listener) {
@@ -115,19 +172,19 @@ export class BackingDataObject {
    * @param key The key of the value to retrieve.
    * @returns The value associated with the key, or undefined if not found.
    */
-  protected value(key: string): Value | undefined {
+  protected value(key: string): Scalar | undefined {
     return this.serverValues.get(key);
   }
 
   /** Values modified locally for latency compensation. */
-  private localValues: Map<string, Value> = new Map();
+  private localValues: Map<string, Scalar> = new Map();
 
   /**
    * Updates the value for a named property locally.
    * @param value The new local value.
    * @param key The key of the property to update.
    */
-  updateLocal(value: Value, key: string): void {
+  updateLocal(value: Scalar, key: string): void {
     this.localValues.set(key, value);
     for (const listener of this.listeners) {
       if (key in listener) {
@@ -145,9 +202,6 @@ export class Cache {
   /** A map of [query + variables] --> StubResultTree returned from that query. */
   srtCache = new Map<string, StubResultTree>();
 
-  /** A map of [entity typename + id] --> BackingDataObject for that entity. */
-  bdoCache = new Map<string, BackingDataObject>();
-
   /**
    * Creates a unique StrubResultTree cache key for a given query and its variables.
    * @param queryName The name of the query.
@@ -157,6 +211,9 @@ export class Cache {
   static srtCacheKey(queryName: string, vars: unknown): string {
     return queryName + '|' + JSON.stringify(vars);
   }
+
+  /** A map of [entity typename + id] --> BackingDataObject for that entity. */
+  bdoCache = new Map<string, BackingDataObject>();
 
   /**
    * Creates a unique BackingDataObject cache key for a given entity.
@@ -172,62 +229,89 @@ export class Cache {
    * Updates the cache with the results of a query. This is the main entry point.
    * @param queryResult The result of the query.
    */
-  updateCache<Data extends object, Variables>(
+  updateCache<Data extends QueryResultData, Variables>(
     queryResult: QueryResult<Data, Variables>
   ): void {
     const resultTreeCacheKey = Cache.srtCacheKey(
       queryResult.ref.name,
       queryResult.ref.variables
     );
-    const stubResultTree = this.normalize(queryResult.data) as StubResultTree;
+    const stubResultTree = this.createSrt(queryResult.data);
     this.srtCache.set(resultTreeCacheKey, stubResultTree);
   }
 
   /**
-   * Recursively traverses a data object, normalizing cacheable entities into BDOs
-   * and replacing them with stubs.
-   * @param data The data to normalize (can be an object, array, or primitive).
-   * @returns The normalized data with stubs.
+   * Caches the provided selection set. Attempts to normalize the set by recursively traversing it's,
+   * fields, caching them along the way.
+   *
+   * @param selectionSet The data to ATTEMPT TO normalize.
+   * @returns the top-level selection set (which may be an SDO if it was normalizeable).
    */
-  private normalize(data: QueryResultData | Value): Value | StubDataObject {
-    if (Array.isArray(data)) {
-      return data.map(item => this.normalize(item));
-    }
+  private cacheSelectionSet(
+    selectionSet: SelectionSet
+  ): SelectionSet | StubDataObject {
+    const cachedSelectionSet: SelectionSet = {};
 
-    if (isNormalizeable(data)) {
-      const stub: StubDataObject = {};
-      const bdoCacheKey = Cache.bdoCacheKey(data.__typename, data.__id);
-      const existingBdo = this.bdoCache.get(bdoCacheKey);
-
-      // data is a single "movie" or "actor"
-      // key is a field of the returned data, such as "name"
-      for (const key in data) {
-        // eslint-disable-next-line no-prototype-builtins
-        if (data.hasOwnProperty(key)) {
-          stub[key] = this.normalize(data[key]);
+    // recursively traverse selection set, creating a new selection set which will be cached.
+    for (const [field, value] of Object.entries(selectionSet)) {
+      if (Array.isArray(value)) {
+        const cachedField = value.map(this.cacheField);
+        // type assertion because typescript thinks this could be a mixed array
+        if (
+          cachedField.every(isScalar) ||
+          cachedField.every(isTopLevelSelectionSet)
+        ) {
+          cachedSelectionSet[field] = cachedField;
+        } else {
+          // mixed array, should never happen
+          cachedSelectionSet[field] = value;
         }
-      }
-
-      if (existingBdo) {
-        this.updateBdo(existingBdo, stub, stub);
       } else {
-        this.createBdo(bdoCacheKey, stub, stub);
+        cachedSelectionSet[field] = this.cacheField(value);
       }
-      return stub;
     }
 
-    if (typeof data === 'object' && data !== null) {
-      const newObj: { [key: string]: Value } = {};
-      for (const key in data) {
-        // eslint-disable-next-line no-prototype-builtins
-        if (data.hasOwnProperty(key)) {
-          newObj[key] = this.normalize(data[key]);
-        }
+    if (isNormalizeable(cachedSelectionSet)) {
+      const bdoCacheKey = Cache.bdoCacheKey(
+        cachedSelectionSet.__typename,
+        cachedSelectionSet.__id
+      );
+      const existingBdo = this.bdoCache.get(bdoCacheKey);
+      if (existingBdo) {
+        this.updateBdo(existingBdo, selectionSet, cachedSelectionSet);
+      } else {
+        this.createBdo(bdoCacheKey, selectionSet, cachedSelectionSet);
       }
-      return newObj;
+      return cachedSelectionSet;
     }
 
-    return data;
+    return cachedSelectionSet;
+  }
+
+  private cacheField(value: Scalar | SelectionSet): Scalar | SelectionSet {
+    if (isTopLevelSelectionSet(value)) {
+      // recurse, and replace cacheable selection sets with SDOs
+      return this.cacheSelectionSet(value);
+    }
+    // return scalars
+    return value;
+  }
+
+  /**
+   * Creates a StubResultTree based on the data returned from a query
+   * @param data the data property of the query result
+   * @returns
+   */
+  private createSrt(data: QueryResultData): StubResultTree {
+    const srt: StubResultTree = {};
+    for (const [tableName, selectionSet] of Object.entries(data)) {
+      if (Array.isArray(selectionSet)) {
+        srt[tableName] = selectionSet.map(this.cacheSelectionSet);
+      } else {
+        srt[tableName] = this.cacheSelectionSet(selectionSet);
+      }
+    }
+    return srt;
   }
 
   /**
@@ -238,10 +322,11 @@ export class Cache {
    */
   private createBdo(
     bdoCacheKey: string,
-    data: QueryResultData,
+    data: SelectionSet,
     stubDataObject: StubDataObject
   ): void {
-    const serverValues = new Map<string, Value>(Object.entries(data));
+    const test = Object.entries(data);
+    const serverValues = new Map<string, Scalar>();
     const newBdo = new BackingDataObject(bdoCacheKey, serverValues);
     newBdo.listeners.add(stubDataObject);
     this.bdoCache.set(bdoCacheKey, newBdo);
@@ -255,7 +340,7 @@ export class Cache {
    */
   private updateBdo(
     backingDataObject: BackingDataObject,
-    data: QueryResultData,
+    data: SelectionSet,
     stubDataObject: StubDataObject
   ): void {
     // TODO: don't cache non-cacheable fields!
