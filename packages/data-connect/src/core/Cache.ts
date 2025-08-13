@@ -49,8 +49,8 @@ function isScalar(value: unknown): value is Scalar {
 }
 
 /**
- * Internal utility type. Defines the shape of selection set for a table. It must have
- * __typename and __id for normalization.
+ * Internal utility type. Defines the shape of selection set for a table.
+ * If it includes __typename and __id, it can be normalized (and is considered a StubDataObject).
  */
 interface SelectionSet {
   [field: string]: Scalar | Scalar[] | SelectionSet | SelectionSet[];
@@ -106,9 +106,14 @@ function isNormalizeable(
 /**
  * Interface for a stub result tree, with fields which are stub data objects.
  * @public
+ * TODO: 
  */
 export interface StubResultTree {
-  [key: string]: StubDataObject | StubDataObjectList;
+  [key: string]:
+    | SelectionSet
+    | SelectionSet[]
+    | StubDataObject
+    | StubDataObjectList;
 }
 
 /**
