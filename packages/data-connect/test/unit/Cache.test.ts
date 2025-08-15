@@ -32,7 +32,8 @@ import {
 import {
   BackingDataObject,
   Cache,
-  StubDataObject
+  StubDataObject,
+  StubResultTree
 } from '../../src/core/Cache';
 chai.use(chaiAsPromised);
 
@@ -590,7 +591,6 @@ describe('Normalized Cache Tests', () => {
         expect(movieStub.reviews![0].text).to.equal(updatedReview.text);
       });
 
-
       it('should handle non-normalizable data by storing it on the stub', () => {
         const { __typename, __id, ...nonNormalizeableMovie } = movieWithReviews;
 
@@ -638,40 +638,40 @@ describe('Normalized Cache Tests', () => {
   });
 });
 
-// // eslint-disable-next-line @typescript-eslint/naming-convention
-// export interface Movie_Key {
-//   id: string;
-//   __typename?: 'Movie_Key';
-// }
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export interface Movie_Key {
+  id: string;
+  __typename?: 'Movie_Key';
+}
 
-// // eslint-disable-next-line @typescript-eslint/naming-convention
-// export interface Actor_Key {
-//   id: string;
-//   __typename?: 'Actor_Key';
-// }
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export interface Actor_Key {
+  id: string;
+  __typename?: 'Actor_Key';
+}
 
-// /** The selection set for the movies field of the ListMovies query */
-// // eslint-disable-next-line @typescript-eslint/naming-convention
-// interface ListMovies_Movies extends StubDataObject {
-//   id: string;
-//   title: string;
-//   imageUrl: string;
-//   releaseYear?: number | null;
-//   genre?: string | null;
-//   rating?: number | null;
-//   tags?: string[] | null;
-//   description?: string | null;
-// }
+/** The selection set for the movies field of the ListMovies query */
+// eslint-disable-next-line @typescript-eslint/naming-convention
+interface ListMovies_Movies extends StubDataObject {
+  id: string;
+  title: string;
+  imageUrl: string;
+  releaseYear?: number | null;
+  genre?: string | null;
+  rating?: number | null;
+  tags?: string[] | null;
+  description?: string | null;
+}
 
-// // eslint-disable-next-line @typescript-eslint/naming-convention
-// interface ListMovies_Actor extends StubDataObject {
-//   id: string;
-//   name: string;
-// }
+// eslint-disable-next-line @typescript-eslint/naming-convention
+interface ListMovies_Actor extends StubDataObject {
+  id: string;
+  name: string;
+}
 
-// /** The shape of the data returned from this query */
-// export interface ListMoviesData extends StubResultTree {
-//   // eslint-disable-next-line @typescript-eslint/array-type
-//   movies: (ListMovies_Movies & Movie_Key)[];
-//   actor: ListMovies_Actor & Actor_Key;
-// }
+/** The shape of the data returned from this query */
+export interface ListMoviesData extends StubResultTree {
+  // eslint-disable-next-line @typescript-eslint/array-type
+  movies: (ListMovies_Movies & Movie_Key)[];
+  actor: ListMovies_Actor & Actor_Key;
+}
