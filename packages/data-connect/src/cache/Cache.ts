@@ -28,10 +28,7 @@ import {
   StubDataObjectList
 } from './util';
 
-/**
- * Interface for a stub result tree, with fields which are stub data objects.
- * @public
- */
+/** Interface for a stub result tree, with fields which are stub data objects. */
 export interface StubResultTree {
   [alias: string]:
     | SelectionSet
@@ -40,10 +37,7 @@ export interface StubResultTree {
     | StubDataObjectList;
 }
 
-/**
- * A class used to hold an entity's normalized cached values across all queries.
- * @public
- */
+/** A class used to hold an entity's normalized cached values across all queries. */
 class BackingDataObject {
   /** Stable unique key identifying the entity across types. Format: TypeName|ID */
   readonly typedKey: string;
@@ -109,10 +103,7 @@ class BackingDataObject {
   }
 }
 
-/**
- * A class representing the cache for query results and entity data.
- * @public
- */
+/** A class representing the cache for query results and entity data. */
 export class Cache {
   /** A map of (srtCacheKey --> StubResultTree returned from that query). */
   private srtCache = new Map<string, StubResultTree>();
@@ -161,7 +152,7 @@ export class Cache {
   /**
    * Creates a StubResultTree based on the data returned from a query
    * @param data the data property of the query result
-   * @returns
+   * @returns the StubResultTree
    */
   private createSrt(data: QueryData): StubResultTree {
     const srt: StubResultTree = {};
@@ -221,6 +212,11 @@ export class Cache {
     return cachedSelectionSet;
   }
 
+  /**
+   * Caches a single field's value. If the value is a selection set, it recursively normalizes it.
+   * @param value The field value to cache.
+   * @returns The cached field value, which might be a StubDataObject if it was a normalizeable selection set.
+   */
   private cacheField(value: Field): Field {
     if (isSelectionSet(value)) {
       // recurse, and replace cacheable selection sets with SDOs
